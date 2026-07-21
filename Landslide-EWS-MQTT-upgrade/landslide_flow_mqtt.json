@@ -1,0 +1,851 @@
+[
+  {
+    "id": "tab_landslide",
+    "type": "tab",
+    "label": "Landslide Monitor",
+    "disabled": false,
+    "info": ""
+  },
+  {
+    "id": "ui_tab_main",
+    "type": "ui_tab",
+    "name": "Landslide Monitor",
+    "icon": "dashboard",
+    "order": 1,
+    "disabled": false,
+    "hidden": false
+  },
+  {
+    "id": "grp_status",
+    "type": "ui_group",
+    "name": "Status & Hazard",
+    "tab": "ui_tab_main",
+    "order": 1,
+    "disp": true,
+    "width": "12",
+    "collapse": false
+  },
+  {
+    "id": "grp_gauges",
+    "type": "ui_group",
+    "name": "Sensor Gauges",
+    "tab": "ui_tab_main",
+    "order": 2,
+    "disp": true,
+    "width": "12",
+    "collapse": false
+  },
+  {
+    "id": "grp_charts",
+    "type": "ui_group",
+    "name": "Real-time Charts",
+    "tab": "ui_tab_main",
+    "order": 3,
+    "disp": true,
+    "width": "12",
+    "collapse": false
+  },
+  {
+    "id": "grp_log",
+    "type": "ui_group",
+    "name": "System Log",
+    "tab": "ui_tab_main",
+    "order": 4,
+    "disp": true,
+    "width": "12",
+    "collapse": false
+  },
+  {
+    "id": "0e8b165b1ba4ede0",
+    "type": "ui_base",
+    "theme": {
+      "name": "theme-light",
+      "lightTheme": {
+        "default": "#0094CE",
+        "baseColor": "#0094CE",
+        "baseFont": "-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Oxygen-Sans,Ubuntu,Cantarell,Helvetica Neue,sans-serif",
+        "edited": false
+      },
+      "darkTheme": {
+        "default": "#097479",
+        "baseColor": "#097479",
+        "baseFont": "-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Oxygen-Sans,Ubuntu,Cantarell,Helvetica Neue,sans-serif",
+        "edited": false
+      },
+      "customTheme": {
+        "name": "Untitled Theme 1",
+        "default": "#4B7930",
+        "baseColor": "#4B7930",
+        "baseFont": "-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Oxygen-Sans,Ubuntu,Cantarell,Helvetica Neue,sans-serif"
+      },
+      "themeState": {
+        "base-color": {
+          "default": "#0094CE",
+          "value": "#0094CE",
+          "edited": false
+        },
+        "page-titlebar-backgroundColor": {
+          "value": "#0094CE",
+          "edited": false
+        },
+        "page-backgroundColor": {
+          "value": "#fafafa",
+          "edited": false
+        },
+        "page-sidebar-backgroundColor": {
+          "value": "#ffffff",
+          "edited": false
+        },
+        "group-textColor": {
+          "value": "#1bbfff",
+          "edited": false
+        },
+        "group-borderColor": {
+          "value": "#ffffff",
+          "edited": false
+        },
+        "group-backgroundColor": {
+          "value": "#ffffff",
+          "edited": false
+        },
+        "widget-textColor": {
+          "value": "#111111",
+          "edited": false
+        },
+        "widget-backgroundColor": {
+          "value": "#0094ce",
+          "edited": false
+        },
+        "widget-borderColor": {
+          "value": "#ffffff",
+          "edited": false
+        },
+        "base-font": {
+          "value": "-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Oxygen-Sans,Ubuntu,Cantarell,Helvetica Neue,sans-serif"
+        }
+      },
+      "angularTheme": {
+        "primary": "indigo",
+        "accents": "blue",
+        "warn": "red",
+        "background": "grey",
+        "palette": "light"
+      }
+    },
+    "site": {
+      "name": "Node-RED Dashboard",
+      "hideToolbar": "false",
+      "allowSwipe": "false",
+      "lockMenu": "false",
+      "allowTempTheme": "true",
+      "dateFormat": "DD/MM/YYYY",
+      "sizes": {
+        "sx": 48,
+        "sy": 48,
+        "gx": 6,
+        "gy": 6,
+        "cx": 6,
+        "cy": 6,
+        "px": 0,
+        "py": 0
+      }
+    }
+  },
+  {
+    "id": "c1400a6218f30122",
+    "type": "influxdb",
+    "hostname": "127.0.0.1",
+    "port": 8086,
+    "protocol": "http",
+    "database": "database",
+    "name": "",
+    "usetls": false,
+    "tls": "",
+    "influxdbVersion": "2.0",
+    "url": "http://127.0.0.1:8086",
+    "timeout": 10,
+    "rejectUnauthorized": true
+  },
+  {
+    "id": "http_sensor",
+    "type": "http in",
+    "z": "tab_landslide",
+    "name": "Sensor Data IN",
+    "url": "/sensor_data",
+    "method": "post",
+    "upload": false,
+    "swaggerDoc": "",
+    "x": 130,
+    "y": 80,
+    "wires": [
+      [
+        "route_data",
+        "http_res",
+        "influx_format_node"
+      ]
+    ]
+  },
+  {
+    "id": "http_res",
+    "type": "http response",
+    "z": "tab_landslide",
+    "name": "",
+    "statusCode": "200",
+    "headers": {},
+    "x": 330,
+    "y": 140,
+    "wires": []
+  },
+  {
+    "id": "http_log",
+    "type": "http in",
+    "z": "tab_landslide",
+    "name": "Log IN",
+    "url": "/sensor_data_log",
+    "method": "post",
+    "upload": false,
+    "swaggerDoc": "",
+    "x": 130,
+    "y": 400,
+    "wires": [
+      [
+        "log_format",
+        "http_res_log"
+      ]
+    ]
+  },
+  {
+    "id": "http_res_log",
+    "type": "http response",
+    "z": "tab_landslide",
+    "name": "",
+    "statusCode": "200",
+    "headers": {},
+    "x": 330,
+    "y": 440,
+    "wires": []
+  },
+  {
+    "id": "log_format",
+    "type": "function",
+    "z": "tab_landslide",
+    "name": "Format Log",
+    "func": "var ts = new Date().toLocaleTimeString('id-ID');\nmsg.payload = ts + ' ' + (msg.payload.log || JSON.stringify(msg.payload));\nreturn msg;",
+    "outputs": 1,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 330,
+    "y": 400,
+    "wires": [
+      [
+        "ui_log"
+      ]
+    ]
+  },
+  {
+    "id": "route_data",
+    "type": "function",
+    "z": "tab_landslide",
+    "name": "Route to Dashboard",
+    "func": "var d = msg.payload;\nif (!d || typeof d.tilt === 'undefined') return null;\n\nvar state = d.state || 'UNKNOWN';\nvar map = {\n    'NORMAL':   { color: '#00C853', label: 'AMAN' },\n    'WATCH':    { color: '#F9A825', label: 'WASPADA' },\n    'WARNING':  { color: '#EF6C00', label: 'PERINGATAN' },\n    'DANGER':   { color: '#C62828', label: 'BAHAYA' },\n    'CRITICAL': { color: '#6A1B9A', label: 'KRITIS' }\n};\nvar c = map[state] || { color: '#607D8B', label: state };\nvar banner = '<div style=\"text-align:center;padding:8px;border-radius:8px;background:' + c.color + ';color:#fff;font-weight:bold;font-size:1.8em;\">' + c.label + '</div>';\n\nvar ts = new Date().toLocaleTimeString('id-ID');\nvar logStr = ts + ' | T:' + d.tilt.toFixed(2) + ' G:' + d.gravity.toFixed(3) + ' R:' + d.rotation.toFixed(1) + ' P:' + d.piezo.toFixed(0) + ' H:' + d.hazard.toFixed(0) + ' ' + state;\n\nnode.status({fill:'green', shape:'dot', text: state + ' H:' + d.hazard.toFixed(0)});\n\nreturn [\n    {payload: d.tilt},\n    {payload: d.hazard},\n    {payload: d.rotation},\n    {payload: d.gravity},\n    {payload: d.piezo},\n    {payload: state},\n    {payload: banner},\n    {payload: d.tilt},\n    {payload: d.piezo},\n    {payload: d.rotation},\n    {payload: d.gravity},\n    {payload: d.hazard},\n    {payload: logStr}\n];",
+    "outputs": 13,
+    "timeout": "",
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 380,
+    "y": 100,
+    "wires": [
+      [
+        "gauge_tilt"
+      ],
+      [
+        "gauge_hazard"
+      ],
+      [
+        "gauge_rotation"
+      ],
+      [
+        "gauge_gravity"
+      ],
+      [
+        "gauge_piezo"
+      ],
+      [
+        "text_state"
+      ],
+      [
+        "text_banner"
+      ],
+      [
+        "chart_tilt"
+      ],
+      [
+        "chart_piezo"
+      ],
+      [
+        "chart_rotation"
+      ],
+      [
+        "chart_gravity"
+      ],
+      [
+        "chart_hazard"
+      ],
+      [
+        "ui_log"
+      ]
+    ]
+  },
+  {
+    "id": "gauge_tilt",
+    "type": "ui_gauge",
+    "z": "tab_landslide",
+    "name": "Tilt",
+    "group": "grp_gauges",
+    "order": 1,
+    "width": "3",
+    "height": "3",
+    "gtype": "gage",
+    "title": "Tilt Angle",
+    "label": "deg",
+    "format": "{{value | number:2}}°",
+    "min": 0,
+    "max": "35",
+    "colors": [
+      "#00C853",
+      "#F9A825",
+      "#C62828"
+    ],
+    "seg1": "8",
+    "seg2": "18",
+    "x": 660,
+    "y": 20,
+    "wires": []
+  },
+  {
+    "id": "gauge_hazard",
+    "type": "ui_gauge",
+    "z": "tab_landslide",
+    "name": "Hazard",
+    "group": "grp_status",
+    "order": 1,
+    "width": "4",
+    "height": "4",
+    "gtype": "gage",
+    "title": "Hazard Index",
+    "label": "/ 100",
+    "format": "{{value | number:1}}",
+    "min": 0,
+    "max": "100",
+    "colors": [
+      "#00C853",
+      "#F9A825",
+      "#C62828"
+    ],
+    "seg1": "20",
+    "seg2": "70",
+    "x": 660,
+    "y": 60,
+    "wires": []
+  },
+  {
+    "id": "gauge_rotation",
+    "type": "ui_gauge",
+    "z": "tab_landslide",
+    "name": "Rotation",
+    "group": "grp_gauges",
+    "order": 2,
+    "width": "3",
+    "height": "3",
+    "gtype": "gage",
+    "title": "Rotation",
+    "label": "dps",
+    "format": "{{value | number:1}}",
+    "min": 0,
+    "max": "250",
+    "colors": [
+      "#00C853",
+      "#F9A825",
+      "#C62828"
+    ],
+    "seg1": "40",
+    "seg2": "130",
+    "x": 660,
+    "y": 100,
+    "wires": []
+  },
+  {
+    "id": "gauge_gravity",
+    "type": "ui_gauge",
+    "z": "tab_landslide",
+    "name": "Gravity",
+    "group": "grp_gauges",
+    "order": 3,
+    "width": "3",
+    "height": "3",
+    "gtype": "gage",
+    "title": "Gravity Drift",
+    "label": "g",
+    "format": "{{value | number:4}}g",
+    "min": 0,
+    "max": "0.5",
+    "colors": [
+      "#00C853",
+      "#F9A825",
+      "#C62828"
+    ],
+    "seg1": "0.035",
+    "seg2": "0.15",
+    "x": 660,
+    "y": 140,
+    "wires": []
+  },
+  {
+    "id": "gauge_piezo",
+    "type": "ui_gauge",
+    "z": "tab_landslide",
+    "name": "Vibration",
+    "group": "grp_gauges",
+    "order": 4,
+    "width": "3",
+    "height": "3",
+    "gtype": "gage",
+    "title": "Vibration Index",
+    "label": "/ 100",
+    "format": "{{value | number:1}}",
+    "min": 0,
+    "max": "100",
+    "colors": [
+      "#00C853",
+      "#F9A825",
+      "#C62828"
+    ],
+    "seg1": "35",
+    "seg2": "65",
+    "x": 660,
+    "y": 180,
+    "wires": []
+  },
+  {
+    "id": "text_state",
+    "type": "ui_text",
+    "z": "tab_landslide",
+    "group": "grp_status",
+    "order": 2,
+    "width": "4",
+    "height": "1",
+    "name": "State",
+    "label": "Alert Level",
+    "format": "{{msg.payload}}",
+    "layout": "row-spread",
+    "x": 660,
+    "y": 220,
+    "wires": []
+  },
+  {
+    "id": "text_banner",
+    "type": "ui_template",
+    "z": "tab_landslide",
+    "group": "grp_status",
+    "name": "Status Banner",
+    "order": 3,
+    "width": "4",
+    "height": "3",
+    "format": "<div ng-bind-html=\"msg.payload\"></div>",
+    "storeOutMessages": true,
+    "fwdInMessages": true,
+    "resendOnRefresh": true,
+    "templateScope": "local",
+    "x": 660,
+    "y": 260,
+    "wires": [
+      []
+    ]
+  },
+  {
+    "id": "chart_tilt",
+    "type": "ui_chart",
+    "z": "tab_landslide",
+    "name": "Tilt",
+    "group": "grp_charts",
+    "order": 1,
+    "width": "6",
+    "height": "4",
+    "label": "Tilt (derajat)",
+    "chartType": "line",
+    "legend": "false",
+    "xformat": "HH:mm:ss",
+    "interpolate": "linear",
+    "nodata": "Menunggu data...",
+    "dot": false,
+    "ymin": "0",
+    "ymax": "35",
+    "removeOlder": "5",
+    "removeOlderPoints": "200",
+    "removeOlderUnit": "60",
+    "cutout": 0,
+    "useOneColor": false,
+    "useUTC": false,
+    "colors": [
+      "#1E88E5",
+      "#43A047",
+      "#E53935",
+      "#FB8C00",
+      "#8E24AA",
+      "#00ACC1",
+      "#6D4C41",
+      "#546E7A",
+      "#F48FB1"
+    ],
+    "outputs": 1,
+    "x": 660,
+    "y": 300,
+    "wires": [
+      []
+    ]
+  },
+  {
+    "id": "chart_piezo",
+    "type": "ui_chart",
+    "z": "tab_landslide",
+    "name": "Piezo",
+    "group": "grp_charts",
+    "order": 2,
+    "width": "6",
+    "height": "4",
+    "label": "Vibration Index",
+    "chartType": "line",
+    "legend": "false",
+    "xformat": "HH:mm:ss",
+    "interpolate": "linear",
+    "nodata": "Menunggu data...",
+    "dot": false,
+    "ymin": "0",
+    "ymax": "100",
+    "removeOlder": "5",
+    "removeOlderPoints": "200",
+    "removeOlderUnit": "60",
+    "cutout": 0,
+    "useOneColor": false,
+    "useUTC": false,
+    "colors": [
+      "#E53935",
+      "#43A047",
+      "#1E88E5",
+      "#FB8C00",
+      "#8E24AA",
+      "#00ACC1",
+      "#6D4C41",
+      "#546E7A",
+      "#F48FB1"
+    ],
+    "outputs": 1,
+    "x": 660,
+    "y": 340,
+    "wires": [
+      []
+    ]
+  },
+  {
+    "id": "chart_rotation",
+    "type": "ui_chart",
+    "z": "tab_landslide",
+    "name": "Rotation",
+    "group": "grp_charts",
+    "order": 3,
+    "width": "6",
+    "height": "4",
+    "label": "Rotasi (dps)",
+    "chartType": "line",
+    "legend": "false",
+    "xformat": "HH:mm:ss",
+    "interpolate": "linear",
+    "nodata": "Menunggu data...",
+    "dot": false,
+    "ymin": "0",
+    "ymax": "",
+    "removeOlder": "5",
+    "removeOlderPoints": "200",
+    "removeOlderUnit": "60",
+    "cutout": 0,
+    "useOneColor": false,
+    "useUTC": false,
+    "colors": [
+      "#8E24AA",
+      "#43A047",
+      "#E53935",
+      "#FB8C00",
+      "#1E88E5",
+      "#00ACC1",
+      "#6D4C41",
+      "#546E7A",
+      "#F48FB1"
+    ],
+    "outputs": 1,
+    "x": 660,
+    "y": 380,
+    "wires": [
+      []
+    ]
+  },
+  {
+    "id": "chart_gravity",
+    "type": "ui_chart",
+    "z": "tab_landslide",
+    "name": "Gravity",
+    "group": "grp_charts",
+    "order": 4,
+    "width": "6",
+    "height": "4",
+    "label": "Gravity Drift (g)",
+    "chartType": "line",
+    "legend": "false",
+    "xformat": "HH:mm:ss",
+    "interpolate": "linear",
+    "nodata": "Menunggu data...",
+    "dot": false,
+    "ymin": "0",
+    "ymax": "",
+    "removeOlder": "5",
+    "removeOlderPoints": "200",
+    "removeOlderUnit": "60",
+    "cutout": 0,
+    "useOneColor": false,
+    "useUTC": false,
+    "colors": [
+      "#00897B",
+      "#43A047",
+      "#E53935",
+      "#FB8C00",
+      "#8E24AA",
+      "#00ACC1",
+      "#6D4C41",
+      "#546E7A",
+      "#F48FB1"
+    ],
+    "outputs": 1,
+    "x": 660,
+    "y": 420,
+    "wires": [
+      []
+    ]
+  },
+  {
+    "id": "chart_hazard",
+    "type": "ui_chart",
+    "z": "tab_landslide",
+    "name": "Hazard",
+    "group": "grp_charts",
+    "order": 5,
+    "width": "12",
+    "height": "4",
+    "label": "Hazard Index",
+    "chartType": "line",
+    "legend": "false",
+    "xformat": "HH:mm:ss",
+    "interpolate": "linear",
+    "nodata": "Menunggu data...",
+    "dot": false,
+    "ymin": "0",
+    "ymax": "100",
+    "removeOlder": "5",
+    "removeOlderPoints": "200",
+    "removeOlderUnit": "60",
+    "cutout": 0,
+    "useOneColor": false,
+    "useUTC": false,
+    "colors": [
+      "#C62828",
+      "#43A047",
+      "#1E88E5",
+      "#FB8C00",
+      "#8E24AA",
+      "#00ACC1",
+      "#6D4C41",
+      "#546E7A",
+      "#F48FB1"
+    ],
+    "outputs": 1,
+    "x": 660,
+    "y": 460,
+    "wires": [
+      []
+    ]
+  },
+  {
+    "id": "ui_log",
+    "type": "ui_text",
+    "z": "tab_landslide",
+    "group": "grp_log",
+    "order": 1,
+    "width": "12",
+    "height": "2",
+    "name": "Log",
+    "label": "Log Terbaru",
+    "format": "<span style='font-family:monospace;font-size:0.85em;'>{{msg.payload}}</span>",
+    "layout": "row-spread",
+    "x": 660,
+    "y": 500,
+    "wires": []
+  },
+  {
+    "id": "5a923d869357888d",
+    "type": "influxdb out",
+    "z": "tab_landslide",
+    "influxdb": "c1400a6218f30122",
+    "name": "",
+    "measurement": "sensor",
+    "precision": "",
+    "retentionPolicy": "",
+    "database": "database",
+    "precisionV18FluxV20": "ms",
+    "retentionPolicyV18Flux": "",
+    "org": "iot_project",
+    "bucket": "landslide_data",
+    "x": 720,
+    "y": 580,
+    "wires": []
+  },
+  {
+    "id": "influx_format_node",
+    "type": "function",
+    "z": "tab_landslide",
+    "name": "Format for InfluxDB",
+    "func": "var d = msg.payload;\nif (!d || typeof d.tilt === 'undefined') return null;\n\nmsg.payload = {\n    tilt: parseFloat(d.tilt) || 0,\n    gravity: parseFloat(d.gravity) || 0,\n    rotation: parseFloat(d.rotation) || 0,\n    piezo: parseFloat(d.piezo) || 0,\n    hazard: parseFloat(d.hazard) || 0\n};\nreturn msg;",
+    "outputs": 1,
+    "timeout": "",
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 400,
+    "y": 580,
+    "wires": [
+      [
+        "5a923d869357888d"
+      ]
+    ]
+  },
+  {
+    "id": "mqtt_broker_local",
+    "type": "mqtt-broker",
+    "name": "Local Mosquitto",
+    "broker": "localhost",
+    "port": "1883",
+    "clientid": "nodered-landslide",
+    "autoConnect": true,
+    "usetls": false,
+    "protocolVersion": "4",
+    "keepalive": "60",
+    "cleansession": true,
+    "birthTopic": "",
+    "birthQos": "0",
+    "birthPayload": "",
+    "closeTopic": "",
+    "closeQos": "0",
+    "closePayload": "",
+    "willTopic": "",
+    "willQos": "0",
+    "willPayload": ""
+  },
+  {
+    "id": "mqtt_in_telemetry",
+    "type": "mqtt in",
+    "z": "tab_landslide",
+    "name": "MQTT Telemetry IN",
+    "topic": "landslide/+/telemetry",
+    "qos": "1",
+    "datatype": "json",
+    "broker": "mqtt_broker_local",
+    "nl": false,
+    "rap": true,
+    "rh": 0,
+    "inputs": 0,
+    "x": 120,
+    "y": 60,
+    "wires": [
+      [
+        "route_data",
+        "influx_format_node"
+      ]
+    ]
+  },
+  {
+    "id": "mqtt_in_event",
+    "type": "mqtt in",
+    "z": "tab_landslide",
+    "name": "MQTT Event IN",
+    "topic": "landslide/+/event",
+    "qos": "1",
+    "datatype": "json",
+    "broker": "mqtt_broker_local",
+    "nl": false,
+    "rap": true,
+    "rh": 0,
+    "inputs": 0,
+    "x": 120,
+    "y": 120,
+    "wires": [
+      [
+        "mqtt_event_format"
+      ]
+    ]
+  },
+  {
+    "id": "mqtt_event_format",
+    "type": "function",
+    "z": "tab_landslide",
+    "name": "Format MQTT Event",
+    "func": "var d = msg.payload || {};\nmsg.payload = { log: 'EVENT dari ' + (d.device || '?') + ' | state=' + (d.state || '?') + ' | mask=' + d.newEvents };\nreturn msg;",
+    "outputs": 1,
+    "noerr": 0,
+    "x": 320,
+    "y": 120,
+    "wires": [
+      [
+        "log_format"
+      ]
+    ]
+  },
+  {
+    "id": "mqtt_in_status",
+    "type": "mqtt in",
+    "z": "tab_landslide",
+    "name": "MQTT Status IN",
+    "topic": "landslide/+/status",
+    "qos": "1",
+    "datatype": "utf8",
+    "broker": "mqtt_broker_local",
+    "nl": false,
+    "rap": true,
+    "rh": 0,
+    "inputs": 0,
+    "x": 120,
+    "y": 180,
+    "wires": [
+      [
+        "mqtt_status_format"
+      ]
+    ]
+  },
+  {
+    "id": "mqtt_status_format",
+    "type": "function",
+    "z": "tab_landslide",
+    "name": "Format Device Status",
+    "func": "var device = (msg.topic || '').split('/')[1] || 'device';\nmsg.payload = { log: 'DEVICE ' + device + ' is ' + msg.payload.toUpperCase() };\nreturn msg;",
+    "outputs": 1,
+    "noerr": 0,
+    "x": 320,
+    "y": 180,
+    "wires": [
+      [
+        "log_format"
+      ]
+    ]
+  }
+]

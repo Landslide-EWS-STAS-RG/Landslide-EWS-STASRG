@@ -5,7 +5,10 @@ import re
 import json
 import sys
 
-SERIAL_PORT = '/dev/cu.usbserial-110'
+# Mac Configuration
+# SERIAL_PORT = '/dev/cu.usbserial-110'
+# Windows Configuration
+SERIAL_PORT = "COM3"
 BAUD_RATE = 115200
 NODE_RED_URL = 'http://127.0.0.1:1880/sensor_data'
 
