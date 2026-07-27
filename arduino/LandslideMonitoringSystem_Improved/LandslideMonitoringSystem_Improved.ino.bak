@@ -1,39 +1,18 @@
-// LandslideMonitoringSystem_MQTT_Raw.ino
-// Target: ESP32 + SparkFun LSM6DS3 IMU + DFRobot SEN0209 piezo film
+// LandslideMonitoringSystem_Improved.ino
+// Target: ESP32 + SparkFun LSM6DS3 IMU
 //
-// RAW-DATA REWORK
-// ----------------
-// This version removes EVERY software filter from the original sketch:
-//   - No median filter, no moving average, no low-pass, no high-pass (IMU).
-//   - No piezo moving average, median, or high-pass.
-//   - No complementary filter: roll/pitch come straight from the raw
-//     accelerometer of the current sample.
-//   - No trend smoothing (EMA) and no energy/RMS moving windows.
-//   - No accelerometer offset or gyro bias subtraction: the values used and
-//     published are the raw sensor readings.
+// This sketch keeps the original project architecture: read IMU data, filter it,
+// estimate tilt, calculate gravity/shock/rotation/trend signals, classify hazard,
+// and print either text diagnostics or Arduino Serial Plotter data.
 //
-// Calibration is still performed once at startup, but ONLY to learn reference
-// values (gravity reference vector, initial roll/pitch, piezo baseline, noise
-// statistics for adaptive thresholds). The runtime data itself is never
-// modified.
-//
-// MQTT REWORK
-// -----------
-// The device now publishes on ONE channel only: the full DataRecord as a JSON
-// document on TOPIC_DATARECORD. The old telemetry/event/status topics are
-// removed. Point the Node-RED "mqtt in" node at the new topic.
+// The monitoring logic is intentionally separated from event detection. The
+// hazard finite-state machine uses hysteresis so noisy samples do not cause
+// alert chatter, while event flags preserve important short-lived signals.
 
 #include <Arduino.h>
 #include <Wire.h>
 #include <math.h>
 #include "SparkFunLSM6DS3.h"
-
-// Network telemetry (WiFi + MQTT). PubSubClient and ArduinoJson are already
-// declared in platformio.ini; Arduino IDE users must install both libraries.
-#include <WiFi.h>
-#include <PubSubClient.h>
-#include <ArduinoJson.h>
-#include <TinyGPS++.h>
 
 // ======================================================
 // DISPLAY MODE
@@ -51,6 +30,26 @@
 #if !defined(MODE_TEXT) && !defined(MODE_PLOT)
 #error "Select one display mode."
 #endif
+
+
+
+// ======================================================
+// FILTER SELECTION
+// ======================================================
+// Each filter can be enabled or disabled at compile time.
+// Low-pass estimates gravity. High-pass estimates vibration. Moving average
+// reduces random noise. Median rejects single-sample spikes.
+
+#define USE_LOWPASS
+#define USE_MOVING_AVERAGE
+#define USE_MEDIAN
+#define USE_HIGHPASS
+
+// Piezo vibration filtering is kept separate from the IMU filters because the
+// SEN0209 signal is a one-dimensional analog waveform, not a gravity vector.
+#define USE_PIEZO_MOVING_AVERAGE
+#define USE_PIEZO_MEDIAN
+#define USE_PIEZO_HIGHPASS
 
 // ======================================================
 // HARDWARE FEATURE SELECTION
@@ -73,35 +72,55 @@ const uint8_t IMU_I2C_ADDRESS = 0x6B;
 // ESP32 interrupt input connected to LSM6DS3 INT1.
 const uint8_t IMU_INT1_PIN = 27;
 
-// GPS Module Pins
-const uint8_t GPS_RX_PIN = 16;
-const uint8_t GPS_TX_PIN = 17;
-
-// DFRobot SEN0209 piezo film analog output.
+// DFRobot SEN0209 piezo film analog output. Use an ADC-capable ESP32 input-only
+// pin where possible. The digital output can be wired later, but analog is the
+// primary measurement for research-quality vibration intensity.
 const uint8_t PIEZO_ANALOG_PIN = 34;
 const uint8_t ADC_RESOLUTION_BITS = 12;
 const uint16_t ADC_MAX_COUNT = 4095;
 const float ADC_REFERENCE_VOLTAGE = 3.3f;
 
-// IMU output configuration.
+// IMU output configuration. The SparkFun library accepts these human-readable
+// values and converts them to sensor register codes in begin().
 const uint16_t IMU_ODR_HZ = 104;          // Output Data Rate in Hz.
 const uint16_t ACCEL_FULL_SCALE_G = 2;    // Valid library ranges: 2, 4, 8, 16 g.
 const uint16_t GYRO_FULL_SCALE_DPS = 245; // Valid ranges: 125/245/500/1000/2000.
 
-// Main loop period.
+// Main loop period. For long deployments, keep this no faster than needed to
+// reduce log size and power use. The IMU can still sample faster internally.
 const uint16_t SAMPLE_INTERVAL_MS = 100;
 
 // Calibration. Samples are collected while the sensor is still. The standard
-// deviations measured here become the baseline for adaptive thresholds. The
-// measured offsets are NOT applied to runtime data in this raw version.
+// deviations measured here become the baseline for adaptive thresholds.
 const int CAL_SAMPLES = 300;
 const uint16_t CAL_SAMPLE_DELAY_MS = 10;
 const float STILLNESS_ACCEL_STD_GOOD = 0.006f; // g, empirical quality reference.
 const float STILLNESS_GYRO_STD_GOOD = 0.35f;   // dps, empirical quality reference.
 
+// Complementary filter. Higher values trust the gyro over short periods and the
+// accelerometer over long periods. This smooths tilt while limiting gyro drift.
+const float COMPLEMENTARY_ALPHA = 0.98f;
+
+// Low-pass and high-pass filter constants. Smaller low-pass alpha gives a
+// smoother gravity estimate. High-pass alpha near 1 preserves vibration changes.
+const float LOWPASS_ALPHA = 0.18f;
+const float HIGHPASS_ALPHA = 0.85f;
+
+// Moving average and median windows. Odd median windows give a true center
+// sample. These small windows are cheap on ESP32 and keep latency modest.
+const uint8_t MOVING_AVERAGE_WINDOW = 8;
+const uint8_t MEDIAN_WINDOW = 5;
+
+// Piezo windows. Energy is the moving sum of absolute vibration amplitude.
+// RMS is calculated from the same window using the square mean.
+const uint8_t PIEZO_MOVING_AVERAGE_WINDOW = 8;
+const uint8_t PIEZO_MEDIAN_WINDOW = 5;
+const uint8_t PIEZO_ENERGY_WINDOW = 20;
+const float PIEZO_HIGHPASS_ALPHA = 0.92f;
+
 // Adaptive threshold multipliers. Threshold = learned mean + K * learned stddev.
-// NOTE: raw (unfiltered) data is noisier than filtered data, so expect these
-// thresholds to land closer to their maximum clamps than before.
+// Minimums stop thresholds from becoming hypersensitive after a very quiet
+// calibration. Maximums catch bad calibrations and keep scale predictable.
 const float WATCH_TILT_K = 3.0f;
 const float WARNING_TILT_K = 7.0f;
 const float DANGER_TILT_K = 13.0f;
@@ -144,19 +163,24 @@ const float PIEZO_MIN_HIGH_ADC = 45.0f;
 const float PIEZO_MIN_SEVERE_ADC = 90.0f;
 const float PIEZO_MAX_SEVERE_ADC = 1800.0f;
 
-// Weighted hazard index. Keep the weights summing to 100 for easy
-// interpretation. The long-drift weight from the filtered version is gone
-// because trend smoothing was removed; its weight moved to tilt/shock/gravity.
-const float WEIGHT_TILT = 35.0f;
+// Trend smoothing. Short trend reacts to recent movement. Long trend represents
+// slow background deformation. Their slopes are useful for creep detection.
+const float SHORT_TREND_ALPHA = 0.12f;
+const float LONG_TREND_ALPHA = 0.015f;
+const float PIEZO_SHORT_TREND_ALPHA = 0.20f;
+const float PIEZO_LONG_TREND_ALPHA = 0.04f;
+
+// Weighted hazard index. Keep the weights summing to 100 for easy interpretation.
+const float WEIGHT_TILT = 30.0f;
 const float WEIGHT_ROTATION = 15.0f;
-const float WEIGHT_SHOCK = 15.0f;
-const float WEIGHT_GRAVITY = 15.0f;
+const float WEIGHT_SHOCK = 10.0f;
+const float WEIGHT_LONG_DRIFT = 15.0f;
+const float WEIGHT_GRAVITY = 10.0f;
 const float WEIGHT_PIEZO_VIBRATION = 15.0f;
 const float WEIGHT_SENSOR_FUSION = 5.0f;
 
 // Hazard-index class thresholds. The finite-state machine adds sample-count
-// hysteresis on top of these values (hysteresis is state logic, not a data
-// filter: the published data stays raw).
+// hysteresis on top of these values.
 const float HAZARD_WATCH_INDEX = 20.0f;
 const float HAZARD_WARNING_INDEX = 45.0f;
 const float HAZARD_DANGER_INDEX = 70.0f;
@@ -174,8 +198,11 @@ const float SENSOR_DISTURBANCE_LOW_G = 0.55f;
 const float SENSOR_DISTURBANCE_HIGH_G = 1.45f;
 const uint8_t PIEZO_REPEATED_PEAKS_PER_SECOND = 4;
 const uint8_t PIEZO_CONTINUOUS_SAMPLES = 10;
+const float PIEZO_INCREASING_SLOPE_ADC_PER_SECOND = 3.0f;
 
-// FIFO and wake/activity register settings.
+// FIFO and wake/activity register settings. The LSM6DS3 register values are
+// intentionally localized so they can be revised if a board uses a different
+// interrupt route.
 const uint8_t FIFO_WATERMARK_LSB = 24; // 12-bit FIFO watermark, low byte.
 const uint8_t FIFO_WATERMARK_MSB = 0;
 const uint8_t WAKE_THRESHOLD_REGISTER_VALUE = 0x02;
@@ -195,12 +222,28 @@ struct SensorSample {
   uint32_t timestampMs;
   Vec3 accelRaw;
   Vec3 gyroRaw;
+  Vec3 accel;
+  Vec3 gyro;
 };
 
 struct PiezoSample {
   uint32_t timestampMs;
   uint16_t rawAdc;
   float voltage;
+};
+
+struct FilteredData {
+  Vec3 accelForTilt;
+  Vec3 gravity;
+  Vec3 vibration;
+  float accelMagnitude;
+  float vibrationMagnitude;
+};
+
+struct PiezoFilteredData {
+  float smoothedAdc;
+  float highpassAdc;
+  float amplitudeAdc;
 };
 
 struct OrientationData {
@@ -211,11 +254,17 @@ struct OrientationData {
 };
 
 struct MotionData {
-  float accelMagnitudeG;
   float gravityDiffG;
-  float gravitySlopeGps; // signed instantaneous rate of gravityDiffG
   float shockG;
   float rotationDps;
+};
+
+struct TrendData {
+  float shortGravityTrend;
+  float longGravityTrend;
+  float gravitySlopeGps;
+  float gravityRateGps;
+  float tiltRateDps;
 };
 
 struct AdaptiveThresholds {
@@ -234,6 +283,8 @@ struct PiezoThresholds {
   float moderateAmplitudeAdc;
   float highAmplitudeAdc;
   float severeAmplitudeAdc;
+  float energyAdc;
+  float rmsAdc;
 };
 
 struct CalibrationData {
@@ -241,7 +292,9 @@ struct CalibrationData {
   Vec3 gyroMeanRaw;
   Vec3 accelStdRaw;
   Vec3 gyroStdRaw;
-  Vec3 gravityReference; // mean raw accel while still (reference only)
+  Vec3 accelOffset;
+  Vec3 gyroBias;
+  Vec3 gravityReference;
   float gravityMagnitudeG;
   float initialRollDeg;
   float initialPitchDeg;
@@ -302,36 +355,43 @@ enum EventFlag {
 const uint16_t EVENT_LAST_BIT = EVENT_PIEZO_MECHANICAL;
 
 struct VibrationData {
-  float amplitudeAdc;       // |raw ADC - calibration baseline| of this sample
-  float peakAmplitudeAdc;   // highest amplitude in the current 1 s window
-  uint16_t peakCount;       // total threshold crossings since boot
+  float amplitudeAdc;
+  float rmsAdc;
+  float energyAdc;
+  float peakAmplitudeAdc;
+  uint16_t peakCount;
   float peaksPerSecond;
-  float vibrationIndex;     // 0..100 from the raw amplitude
-  float rateAdcPerSecond;   // |amplitude - previous amplitude| / dt
+  float vibrationIndex;
+  float shortTrend;
+  float longTrend;
+  float trendSlopeAdcPerSecond;
+  float rateAdcPerSecond;
   VibrationState state;
 };
 
-// The full record built every sample. This is exactly what gets published on
-// the single MQTT DataRecord channel.
 struct DataRecord {
   uint32_t timestampMs;
   Vec3 accelRaw;
   Vec3 gyroRaw;
-  float accelMagnitudeG;
+  Vec3 accelFiltered;
+  Vec3 vibration;
   float rollDeg;
   float pitchDeg;
   float tiltDeg;
   float tiltVelocityDps;
   float gravityDiffG;
-  float gravitySlopeGps;
   float shockG;
   float rotationDps;
-  uint16_t piezoRawAdc;
-  float piezoVoltage;
-  float piezoAmplitudeAdc;
-  float piezoPeakAdc;
-  uint16_t piezoPeakCount;
-  float piezoPeaksPerSecond;
+  float shortTrend;
+  float longTrend;
+  float gravitySlopeGps;
+  float gravityRateGps;
+  float vibrationAmplitudeAdc;
+  float vibrationRmsAdc;
+  float vibrationEnergyAdc;
+  float vibrationPeakAdc;
+  uint16_t vibrationPeakCount;
+  float vibrationPeaksPerSecond;
   float vibrationIndex;
   VibrationState vibrationState;
   float fusionConfidence;
@@ -339,10 +399,6 @@ struct DataRecord {
   AlertState state;
   uint16_t eventMask;
   uint16_t newEventMask;
-  double lat;
-  double lng;
-  double alt;
-  uint8_t satellites;
 };
 
 struct RunningStats {
@@ -365,6 +421,7 @@ LSM6DS3 myIMU(I2C_MODE, IMU_I2C_ADDRESS);
 volatile bool imuInterruptFlag = true;
 bool plotHeaderPrinted = false;
 bool orientationInitialized = false;
+bool filtersInitialized = false;
 uint32_t lastSampleMs = 0;
 uint32_t lastTransitionMs = 0;
 
@@ -373,16 +430,49 @@ AdaptiveThresholds thresholds;
 PiezoCalibrationData piezoCalibration;
 PiezoThresholds piezoThresholds;
 AlertState currentState = STATE_NORMAL;
+AlertState lastPrintedState = STATE_NORMAL;
 
-float previousTiltDeg = 0.0f;
-float previousGravityDiffG = 0.0f;
+Vec3 gravityLp = {0.0f, 0.0f, 0.0f};
+Vec3 highpassPrevInput = {0.0f, 0.0f, 0.0f};
+Vec3 highpassPrevOutput = {0.0f, 0.0f, 0.0f};
+
+Vec3 movingBuffer[MOVING_AVERAGE_WINDOW];
+Vec3 movingSum = {0.0f, 0.0f, 0.0f};
+uint8_t movingIndex = 0;
+uint8_t movingCount = 0;
+
+Vec3 medianBuffer[MEDIAN_WINDOW];
+uint8_t medianIndex = 0;
+uint8_t medianCount = 0;
+
+float piezoMovingBuffer[PIEZO_MOVING_AVERAGE_WINDOW];
+float piezoMovingSum = 0.0f;
+uint8_t piezoMovingIndex = 0;
+uint8_t piezoMovingCount = 0;
+
+float piezoMedianBuffer[PIEZO_MEDIAN_WINDOW];
+uint8_t piezoMedianIndex = 0;
+uint8_t piezoMedianCount = 0;
+
+float piezoEnergyBuffer[PIEZO_ENERGY_WINDOW];
+float piezoSquareBuffer[PIEZO_ENERGY_WINDOW];
+float piezoEnergySum = 0.0f;
+float piezoSquareSum = 0.0f;
+uint8_t piezoEnergyIndex = 0;
+uint8_t piezoEnergyCount = 0;
+
+float piezoHighpassPrevInput = 0.0f;
+float piezoHighpassPrevOutput = 0.0f;
 float previousPiezoAmplitudeAdc = 0.0f;
-
+float previousPiezoLongTrend = 0.0f;
 uint16_t piezoTotalPeakCount = 0;
 uint16_t piezoPeakWindowCount = 0;
 uint32_t piezoPeakWindowStartMs = 0;
-float piezoPeaksPerSecondValue = 0.0f;
-float piezoWindowPeakAdc = 0.0f;
+float piezoPeaksPerSecond = 0.0f;
+
+OrientationData previousOrientation = {0.0f, 0.0f, 0.0f, 0.0f};
+float previousGravityDiffG = 0.0f;
+float previousLongTrend = 0.0f;
 
 uint8_t escalateCount = 0;
 uint8_t deescalateCount = 0;
@@ -415,8 +505,27 @@ float vecMagnitude(Vec3 v) {
   return sqrtf(squareFloat(v.x) + squareFloat(v.y) + squareFloat(v.z));
 }
 
+Vec3 vecAdd(Vec3 a, Vec3 b) {
+  Vec3 out = {a.x + b.x, a.y + b.y, a.z + b.z};
+  return out;
+}
+
 Vec3 vecSub(Vec3 a, Vec3 b) {
   Vec3 out = {a.x - b.x, a.y - b.y, a.z - b.z};
+  return out;
+}
+
+Vec3 vecScale(Vec3 v, float scale) {
+  Vec3 out = {v.x * scale, v.y * scale, v.z * scale};
+  return out;
+}
+
+Vec3 vecLerp(Vec3 previous, Vec3 input, float alpha) {
+  Vec3 out = {
+    previous.x + alpha * (input.x - previous.x),
+    previous.y + alpha * (input.y - previous.y),
+    previous.z + alpha * (input.z - previous.z)
+  };
   return out;
 }
 
@@ -488,7 +597,9 @@ bool readImuRegister(uint8_t reg, uint8_t &value) {
   return true;
 }
 
-// Configure FIFO, data-ready interrupt, and wake/activity detection.
+// Configure FIFO, data-ready interrupt, and wake/activity detection. These
+// hardware features reduce missed transients and provide an interrupt-driven
+// path without using tap, double-tap, pedometer, or 6D orientation features.
 void configureHardwareFeatures() {
 #ifdef USE_FIFO_BUFFER
   writeImuRegister(0x06, FIFO_WATERMARK_LSB);             // FIFO_CTRL1
@@ -508,6 +619,14 @@ void configureHardwareFeatures() {
   writeImuRegister(0x58, 0x20);                           // TAP_CFG: inactivity engine, no tap use.
   writeImuRegister(0x5E, 0x20);                           // MD1_CFG: wake-up event on INT1.
 #endif
+}
+
+uint16_t readFifoSampleCount() {
+  uint8_t status1 = 0;
+  uint8_t status2 = 0;
+  if (!readImuRegister(0x3A, status1)) return 0;
+  if (!readImuRegister(0x3B, status2)) return 0;
+  return ((uint16_t)(status2 & 0x0F) << 8) | status1;
 }
 
 void checkFifoStatus() {
@@ -546,7 +665,6 @@ void configureIMUSettings() {
 #endif
 }
 
-// Pure raw read. No offset correction, no bias subtraction, no filtering.
 void readSensor(SensorSample &sample) {
   sample.timestampMs = millis();
   sample.accelRaw.x = myIMU.readFloatAccelX();
@@ -555,6 +673,11 @@ void readSensor(SensorSample &sample) {
   sample.gyroRaw.x = myIMU.readFloatGyroX();
   sample.gyroRaw.y = myIMU.readFloatGyroY();
   sample.gyroRaw.z = myIMU.readFloatGyroZ();
+
+  // Correct acceleration to a calibrated 1 g reference vector while preserving
+  // physical changes in gravity direction. Gyro bias is subtracted directly.
+  sample.accel = vecSub(sample.accelRaw, calibration.accelOffset);
+  sample.gyro = vecSub(sample.gyroRaw, calibration.gyroBias);
 }
 
 void configurePiezoInput() {
@@ -570,7 +693,7 @@ void readPiezo(PiezoSample &sample) {
 }
 
 // ======================================================
-// CALIBRATION (reference values only -- runtime data stays raw)
+// CALIBRATION
 // ======================================================
 
 float calculateRollFromAccel(Vec3 accel) {
@@ -592,15 +715,17 @@ float calculateCalibrationQuality(float accelStd, float gyroStd, float gravityMa
 void printCalibrationInfo() {
 #ifdef MODE_TEXT
   Serial.println();
-  Serial.println("CALIBRATION (reference only, data stays raw)");
+  Serial.println("CALIBRATION");
   Serial.println("------------------------------------------------------");
   Serial.printf("Samples              : %d\n", CAL_SAMPLES);
   Serial.printf("Accel mean raw       : %8.5f %8.5f %8.5f g\n",
                 calibration.accelMeanRaw.x, calibration.accelMeanRaw.y, calibration.accelMeanRaw.z);
   Serial.printf("Accel std raw        : %8.5f %8.5f %8.5f g\n",
                 calibration.accelStdRaw.x, calibration.accelStdRaw.y, calibration.accelStdRaw.z);
-  Serial.printf("Gyro mean raw        : %8.4f %8.4f %8.4f dps\n",
-                calibration.gyroMeanRaw.x, calibration.gyroMeanRaw.y, calibration.gyroMeanRaw.z);
+  Serial.printf("Accel offsets        : %8.5f %8.5f %8.5f g\n",
+                calibration.accelOffset.x, calibration.accelOffset.y, calibration.accelOffset.z);
+  Serial.printf("Gyro bias            : %8.4f %8.4f %8.4f dps\n",
+                calibration.gyroBias.x, calibration.gyroBias.y, calibration.gyroBias.z);
   Serial.printf("Gyro std raw         : %8.4f %8.4f %8.4f dps\n",
                 calibration.gyroStdRaw.x, calibration.gyroStdRaw.y, calibration.gyroStdRaw.z);
   Serial.printf("Gravity reference    : %8.5f %8.5f %8.5f g\n",
@@ -659,11 +784,13 @@ void calibrateSensor() {
   calibration.gyroMeanRaw = {gxStats.mean, gyStats.mean, gzStats.mean};
   calibration.accelStdRaw = {statsStdDev(axStats), statsStdDev(ayStats), statsStdDev(azStats)};
   calibration.gyroStdRaw = {statsStdDev(gxStats), statsStdDev(gyStats), statsStdDev(gzStats)};
+  calibration.gyroBias = calibration.gyroMeanRaw;
   calibration.gravityMagnitudeG = vecMagnitude(calibration.accelMeanRaw);
 
-  // The gravity reference is the mean raw accel vector while still. It is only
-  // used as a comparison reference; raw samples are never corrected with it.
-  calibration.gravityReference = calibration.accelMeanRaw;
+  Vec3 unitGravity = vecScale(calibration.accelMeanRaw,
+                              safeDivide(1.0f, calibration.gravityMagnitudeG, 1.0f));
+  calibration.accelOffset = vecSub(calibration.accelMeanRaw, unitGravity);
+  calibration.gravityReference = unitGravity;
   calibration.initialRollDeg = calculateRollFromAccel(calibration.gravityReference);
   calibration.initialPitchDeg = calculatePitchFromAccel(calibration.gravityReference);
   calibration.accelMagnitudeMeanG = accelMagStats.mean;
@@ -678,7 +805,12 @@ void calibrateSensor() {
                                                            calibration.gyroMagnitudeStdDps,
                                                            calibration.gravityMagnitudeG);
 
-  previousTiltDeg = 0.0f;
+  gravityLp = calibration.gravityReference;
+  highpassPrevInput = calibration.gravityReference;
+  highpassPrevOutput = {0.0f, 0.0f, 0.0f};
+  previousOrientation.rollDeg = calibration.initialRollDeg;
+  previousOrientation.pitchDeg = calibration.initialPitchDeg;
+  filtersInitialized = true;
   orientationInitialized = true;
 
   printCalibrationInfo();
@@ -686,7 +818,7 @@ void calibrateSensor() {
 
 void printPiezoCalibrationInfo() {
 #ifdef MODE_TEXT
-  Serial.println("PIEZO CALIBRATION (baseline reference only)");
+  Serial.println("PIEZO CALIBRATION");
   Serial.println("------------------------------------------------------");
   Serial.printf("Analog pin           : GPIO %u\n", PIEZO_ANALOG_PIN);
   Serial.printf("Baseline             : %8.2f ADC, %6.3f V\n",
@@ -696,6 +828,8 @@ void printPiezoCalibrationInfo() {
   Serial.printf("Amplitude L/M/H/S    : %8.2f %8.2f %8.2f %8.2f ADC\n",
                 piezoThresholds.lowAmplitudeAdc, piezoThresholds.moderateAmplitudeAdc,
                 piezoThresholds.highAmplitudeAdc, piezoThresholds.severeAmplitudeAdc);
+  Serial.printf("Energy / RMS thresh  : %8.2f %8.2f ADC\n",
+                piezoThresholds.energyAdc, piezoThresholds.rmsAdc);
   Serial.printf("Calibration quality  : %8.1f %%\n", piezoCalibration.qualityPercent);
   Serial.println();
 #endif
@@ -716,6 +850,8 @@ void calculatePiezoThresholds() {
                                            piezoThresholds.moderateAmplitudeAdc + 8.0f);
   piezoThresholds.severeAmplitudeAdc = fmaxf(piezoThresholds.severeAmplitudeAdc,
                                              piezoThresholds.highAmplitudeAdc + 16.0f);
+  piezoThresholds.energyAdc = piezoThresholds.moderateAmplitudeAdc * PIEZO_ENERGY_WINDOW;
+  piezoThresholds.rmsAdc = piezoThresholds.moderateAmplitudeAdc;
 }
 
 void calibratePiezo() {
@@ -746,6 +882,8 @@ void calibratePiezo() {
   piezoCalibration.qualityPercent = clampFloat(100.0f - piezoCalibration.noiseStdAdc * 1.5f,
                                                0.0f, 100.0f);
 
+  piezoHighpassPrevInput = piezoCalibration.baselineAdc;
+  piezoHighpassPrevOutput = 0.0f;
   piezoPeakWindowStartMs = millis();
   calculatePiezoThresholds();
   printPiezoCalibrationInfo();
@@ -776,8 +914,7 @@ void calculateAdaptiveThresholds() {
 // AUTO-CALIBRATION & BUZZER
 // ======================================================
 
-void checkAutoCalibration(const SensorSample &sample, const OrientationData &orientation,
-                          const MotionData &motion, uint32_t nowMs) {
+void checkAutoCalibration(const FilteredData &filtered, const OrientationData &orientation, const MotionData &motion, uint32_t nowMs) {
   // Kondisi sensor dianggap "diam" (gerakan di bawah 30% ambang batas danger)
   bool isStill = (orientation.tiltVelocityDps < (thresholds.tiltVelocityDps * 0.3f)) &&
                  (motion.rotationDps < (thresholds.rotationDps * 0.3f)) &&
@@ -787,14 +924,14 @@ void checkAutoCalibration(const SensorSample &sample, const OrientationData &ori
     // Mulai timer jika baru saja berhenti bergerak
     if (stillnessTimerStartMs == 0) {
       stillnessTimerStartMs = nowMs;
-    }
+    } 
     // Jika sudah diam selama 10 detik, lakukan kalibrasi ulang
     else if ((nowMs - stillnessTimerStartMs) >= AUTO_CALIBRATION_DELAY_MS) {
-
+      
       // Set posisi saat ini sebagai titik acuan (kalibrasi) baru
       calibration.initialRollDeg = orientation.rollDeg;
       calibration.initialPitchDeg = orientation.pitchDeg;
-      calibration.gravityReference = sample.accelRaw;
+      calibration.gravityReference = filtered.gravity;
 
       // Reset state machine ke NORMAL agar buzzer berhenti
       currentState = STATE_NORMAL;
@@ -824,51 +961,211 @@ void controlBuzzer() {
 }
 
 // ======================================================
-// ORIENTATION, MOTION, AND VIBRATION (all raw, no filtering)
+// FILTERING
 // ======================================================
 
-// Roll/pitch come directly from the raw accelerometer of the current sample.
-// No complementary filter, no gyro integration, no smoothing.
-void calculateTilt(const SensorSample &sample, float dtSeconds, OrientationData &orientation) {
-  orientation.rollDeg = calculateRollFromAccel(sample.accelRaw);
-  orientation.pitchDeg = calculatePitchFromAccel(sample.accelRaw);
+Vec3 updateMovingAverage(Vec3 input) {
+  if (movingCount < MOVING_AVERAGE_WINDOW) {
+    movingBuffer[movingIndex] = input;
+    movingSum = vecAdd(movingSum, input);
+    movingCount++;
+  } else {
+    movingSum = vecSub(movingSum, movingBuffer[movingIndex]);
+    movingBuffer[movingIndex] = input;
+    movingSum = vecAdd(movingSum, input);
+  }
+  movingIndex = (movingIndex + 1) % MOVING_AVERAGE_WINDOW;
+  return vecScale(movingSum, safeDivide(1.0f, movingCount, 1.0f));
+}
+
+float medianOfArray(float values[], uint8_t count) {
+  for (uint8_t i = 0; i < count; i++) {
+    for (uint8_t j = i + 1; j < count; j++) {
+      if (values[j] < values[i]) {
+        float tmp = values[i];
+        values[i] = values[j];
+        values[j] = tmp;
+      }
+    }
+  }
+  return values[count / 2];
+}
+
+Vec3 updateMedianFilter(Vec3 input) {
+  medianBuffer[medianIndex] = input;
+  medianIndex = (medianIndex + 1) % MEDIAN_WINDOW;
+  if (medianCount < MEDIAN_WINDOW) medianCount++;
+
+  float xs[MEDIAN_WINDOW];
+  float ys[MEDIAN_WINDOW];
+  float zs[MEDIAN_WINDOW];
+  for (uint8_t i = 0; i < medianCount; i++) {
+    xs[i] = medianBuffer[i].x;
+    ys[i] = medianBuffer[i].y;
+    zs[i] = medianBuffer[i].z;
+  }
+
+  Vec3 out = {
+    medianOfArray(xs, medianCount),
+    medianOfArray(ys, medianCount),
+    medianOfArray(zs, medianCount)
+  };
+  return out;
+}
+
+Vec3 updateHighpass(Vec3 input) {
+  Vec3 out = {
+    HIGHPASS_ALPHA * (highpassPrevOutput.x + input.x - highpassPrevInput.x),
+    HIGHPASS_ALPHA * (highpassPrevOutput.y + input.y - highpassPrevInput.y),
+    HIGHPASS_ALPHA * (highpassPrevOutput.z + input.z - highpassPrevInput.z)
+  };
+  highpassPrevInput = input;
+  highpassPrevOutput = out;
+  return out;
+}
+
+void filterData(const SensorSample &sample, FilteredData &filtered) {
+  Vec3 workingAccel = sample.accel;
+
+#ifdef USE_MEDIAN
+  workingAccel = updateMedianFilter(workingAccel);
+#endif
+
+#ifdef USE_MOVING_AVERAGE
+  workingAccel = updateMovingAverage(workingAccel);
+#endif
+
+#ifdef USE_LOWPASS
+  if (!filtersInitialized) {
+    gravityLp = workingAccel;
+    filtersInitialized = true;
+  } else {
+    gravityLp = vecLerp(gravityLp, workingAccel, LOWPASS_ALPHA);
+  }
+  filtered.gravity = gravityLp;
+  filtered.accelForTilt = gravityLp;
+#else
+  filtered.gravity = workingAccel;
+  filtered.accelForTilt = workingAccel;
+#endif
+
+#ifdef USE_HIGHPASS
+  filtered.vibration = updateHighpass(sample.accel);
+#else
+  filtered.vibration = vecSub(sample.accel, filtered.gravity);
+#endif
+
+  filtered.accelMagnitude = vecMagnitude(sample.accel);
+  filtered.vibrationMagnitude = vecMagnitude(filtered.vibration);
+}
+
+float updatePiezoMovingAverage(float input) {
+  if (piezoMovingCount < PIEZO_MOVING_AVERAGE_WINDOW) {
+    piezoMovingBuffer[piezoMovingIndex] = input;
+    piezoMovingSum += input;
+    piezoMovingCount++;
+  } else {
+    piezoMovingSum -= piezoMovingBuffer[piezoMovingIndex];
+    piezoMovingBuffer[piezoMovingIndex] = input;
+    piezoMovingSum += input;
+  }
+  piezoMovingIndex = (piezoMovingIndex + 1) % PIEZO_MOVING_AVERAGE_WINDOW;
+  return safeDivide(piezoMovingSum, piezoMovingCount, input);
+}
+
+float updatePiezoMedian(float input) {
+  piezoMedianBuffer[piezoMedianIndex] = input;
+  piezoMedianIndex = (piezoMedianIndex + 1) % PIEZO_MEDIAN_WINDOW;
+  if (piezoMedianCount < PIEZO_MEDIAN_WINDOW) piezoMedianCount++;
+
+  float values[PIEZO_MEDIAN_WINDOW];
+  for (uint8_t i = 0; i < piezoMedianCount; i++) {
+    values[i] = piezoMedianBuffer[i];
+  }
+  return medianOfArray(values, piezoMedianCount);
+}
+
+float updatePiezoHighpass(float input) {
+  float output = PIEZO_HIGHPASS_ALPHA * (piezoHighpassPrevOutput + input - piezoHighpassPrevInput);
+  piezoHighpassPrevInput = input;
+  piezoHighpassPrevOutput = output;
+  return output;
+}
+
+void filterPiezo(const PiezoSample &sample, PiezoFilteredData &filtered) {
+  float workingAdc = sample.rawAdc;
+
+#ifdef USE_PIEZO_MOVING_AVERAGE
+  workingAdc = updatePiezoMovingAverage(workingAdc);
+#endif
+
+#ifdef USE_PIEZO_MEDIAN
+  workingAdc = updatePiezoMedian(workingAdc);
+#endif
+
+  filtered.smoothedAdc = workingAdc;
+
+#ifdef USE_PIEZO_HIGHPASS
+  filtered.highpassAdc = updatePiezoHighpass(workingAdc);
+  filtered.amplitudeAdc = fabsf(filtered.highpassAdc);
+#else
+  filtered.highpassAdc = workingAdc - piezoCalibration.baselineAdc;
+  filtered.amplitudeAdc = fabsf(filtered.highpassAdc);
+#endif
+}
+
+// ======================================================
+// ORIENTATION, MOTION, AND TREND
+// ======================================================
+
+void calculateTilt(const SensorSample &sample, const FilteredData &filtered,
+                   float dtSeconds, OrientationData &orientation) {
+  float rollAccel = calculateRollFromAccel(filtered.accelForTilt);
+  float pitchAccel = calculatePitchFromAccel(filtered.accelForTilt);
+
+  if (!orientationInitialized || dtSeconds <= 0.0f) {
+    orientation.rollDeg = rollAccel;
+    orientation.pitchDeg = pitchAccel;
+    orientationInitialized = true;
+  } else {
+    float gyroRoll = previousOrientation.rollDeg + sample.gyro.x * dtSeconds;
+    float gyroPitch = previousOrientation.pitchDeg + sample.gyro.y * dtSeconds;
+    orientation.rollDeg = COMPLEMENTARY_ALPHA * gyroRoll + (1.0f - COMPLEMENTARY_ALPHA) * rollAccel;
+    orientation.pitchDeg = COMPLEMENTARY_ALPHA * gyroPitch + (1.0f - COMPLEMENTARY_ALPHA) * pitchAccel;
+  }
 
   float rollDelta = angleDifferenceDeg(orientation.rollDeg, calibration.initialRollDeg);
   float pitchDelta = angleDifferenceDeg(orientation.pitchDeg, calibration.initialPitchDeg);
   orientation.tiltDeg = sqrtf(squareFloat(rollDelta) + squareFloat(pitchDelta));
-
-  if (!orientationInitialized || dtSeconds <= 0.0f) {
-    orientation.tiltVelocityDps = 0.0f;
-    orientationInitialized = true;
-  } else {
-    orientation.tiltVelocityDps = fabsf(orientation.tiltDeg - previousTiltDeg) /
-                                  fmaxf(dtSeconds, 0.001f);
-  }
+  orientation.tiltVelocityDps = fabsf(orientation.tiltDeg - previousOrientation.tiltDeg) /
+                                fmaxf(dtSeconds, 0.001f);
 }
 
-void calculateMotion(const SensorSample &sample, float dtSeconds, MotionData &motion) {
-  motion.accelMagnitudeG = vecMagnitude(sample.accelRaw);
-
-  // Deviation of the raw accel vector from the still-state reference.
-  Vec3 gravityDelta = vecSub(sample.accelRaw, calibration.gravityReference);
+void calculateGravity(const FilteredData &filtered, MotionData &motion) {
+  Vec3 gravityDelta = vecSub(filtered.gravity, calibration.gravityReference);
   motion.gravityDiffG = vecMagnitude(gravityDelta);
-
-  // Signed instantaneous slope (no EMA trend smoothing).
-  motion.gravitySlopeGps = (motion.gravityDiffG - previousGravityDiffG) /
-                           fmaxf(dtSeconds, 0.001f);
-
-  // Shock relative to the calibrated gravity magnitude.
-  motion.shockG = fabsf(motion.accelMagnitudeG - calibration.gravityMagnitudeG);
-
-  // Rotation straight from the raw gyro.
-  motion.rotationDps = vecMagnitude(sample.gyroRaw);
 }
 
-float normalizedScore(float value, float start, float fullScale) {
-  if (value <= start) return 0.0f;
-  if (value >= fullScale) return 100.0f;
-  return 100.0f * (value - start) / fmaxf(fullScale - start, 0.001f);
+void calculateShock(const FilteredData &filtered, MotionData &motion) {
+  motion.shockG = fabsf(filtered.accelMagnitude - 1.0f);
 }
+
+void calculateRotation(const SensorSample &sample, MotionData &motion) {
+  motion.rotationDps = vecMagnitude(sample.gyro);
+}
+
+void calculateTrend(const OrientationData &orientation, const MotionData &motion,
+                    float dtSeconds, TrendData &trend) {
+  trend.shortGravityTrend = SHORT_TREND_ALPHA * motion.gravityDiffG +
+                            (1.0f - SHORT_TREND_ALPHA) * trend.shortGravityTrend;
+  trend.longGravityTrend = LONG_TREND_ALPHA * motion.gravityDiffG +
+                           (1.0f - LONG_TREND_ALPHA) * trend.longGravityTrend;
+  trend.gravitySlopeGps = (trend.longGravityTrend - previousLongTrend) / fmaxf(dtSeconds, 0.001f);
+  trend.gravityRateGps = fabsf(motion.gravityDiffG - previousGravityDiffG) / fmaxf(dtSeconds, 0.001f);
+  trend.tiltRateDps = orientation.tiltVelocityDps;
+}
+
+float normalizedScore(float value, float start, float fullScale);
 
 VibrationState classifyVibration(float vibrationIndex) {
   if (vibrationIndex >= 85.0f) return VIBRATION_SEVERE;
@@ -878,13 +1175,43 @@ VibrationState classifyVibration(float vibrationIndex) {
   return VIBRATION_VERY_QUIET;
 }
 
-// Peak bookkeeping: counts threshold crossings and tracks the raw peak of the
-// current one-second window. Counting events is not filtering; the amplitude
-// values themselves stay raw.
-void updatePiezoPeaks(float amplitudeAdc, uint32_t timestampMs, VibrationData &vibration) {
-  if (amplitudeAdc > piezoWindowPeakAdc) {
-    piezoWindowPeakAdc = amplitudeAdc;
+float calculateVibrationIndex(float amplitudeAdc, float rmsAdc, float energyAdc) {
+  float amplitudeScore = normalizedScore(amplitudeAdc,
+                                         piezoThresholds.lowAmplitudeAdc,
+                                         piezoThresholds.severeAmplitudeAdc);
+  float rmsScore = normalizedScore(rmsAdc,
+                                   piezoThresholds.rmsAdc,
+                                   piezoThresholds.severeAmplitudeAdc);
+  float energyScore = normalizedScore(energyAdc,
+                                      piezoThresholds.energyAdc,
+                                      piezoThresholds.severeAmplitudeAdc * PIEZO_ENERGY_WINDOW);
+  return clampFloat(fmaxf(amplitudeScore, fmaxf(rmsScore, energyScore)), 0.0f, 100.0f);
+}
+
+void updatePiezoEnergy(float amplitudeAdc, VibrationData &vibration) {
+  float square = squareFloat(amplitudeAdc);
+  if (piezoEnergyCount < PIEZO_ENERGY_WINDOW) {
+    piezoEnergyBuffer[piezoEnergyIndex] = amplitudeAdc;
+    piezoSquareBuffer[piezoEnergyIndex] = square;
+    piezoEnergySum += amplitudeAdc;
+    piezoSquareSum += square;
+    piezoEnergyCount++;
+  } else {
+    piezoEnergySum -= piezoEnergyBuffer[piezoEnergyIndex];
+    piezoSquareSum -= piezoSquareBuffer[piezoEnergyIndex];
+    piezoEnergyBuffer[piezoEnergyIndex] = amplitudeAdc;
+    piezoSquareBuffer[piezoEnergyIndex] = square;
+    piezoEnergySum += amplitudeAdc;
+    piezoSquareSum += square;
   }
+  piezoEnergyIndex = (piezoEnergyIndex + 1) % PIEZO_ENERGY_WINDOW;
+
+  vibration.energyAdc = piezoEnergySum;
+  vibration.rmsAdc = sqrtf(safeDivide(piezoSquareSum, piezoEnergyCount, 0.0f));
+}
+
+void updatePiezoPeaks(float amplitudeAdc, uint32_t timestampMs, VibrationData &vibration) {
+  vibration.peakAmplitudeAdc = fmaxf(vibration.peakAmplitudeAdc * 0.92f, amplitudeAdc);
 
   bool crossedPeakThreshold = amplitudeAdc >= piezoThresholds.moderateAmplitudeAdc &&
                               previousPiezoAmplitudeAdc < piezoThresholds.moderateAmplitudeAdc;
@@ -895,47 +1222,50 @@ void updatePiezoPeaks(float amplitudeAdc, uint32_t timestampMs, VibrationData &v
 
   uint32_t elapsedMs = timestampMs - piezoPeakWindowStartMs;
   if (elapsedMs >= 1000) {
-    piezoPeaksPerSecondValue = piezoPeakWindowCount * 1000.0f / elapsedMs;
+    piezoPeaksPerSecond = piezoPeakWindowCount * 1000.0f / elapsedMs;
     piezoPeakWindowCount = 0;
     piezoPeakWindowStartMs = timestampMs;
-    piezoWindowPeakAdc = amplitudeAdc;
   }
 
-  vibration.peakAmplitudeAdc = piezoWindowPeakAdc;
   vibration.peakCount = piezoTotalPeakCount;
-  vibration.peaksPerSecond = piezoPeaksPerSecondValue;
+  vibration.peaksPerSecond = piezoPeaksPerSecond;
 }
 
-void calculateVibration(const PiezoSample &sample, float dtSeconds, VibrationData &vibration) {
-  // Amplitude is simply the raw ADC deviation from the calibration baseline.
-  vibration.amplitudeAdc = fabsf((float)sample.rawAdc - piezoCalibration.baselineAdc);
-
+void calculateVibration(const PiezoSample &sample, const PiezoFilteredData &filtered,
+                        float dtSeconds, VibrationData &vibration) {
+  vibration.amplitudeAdc = filtered.amplitudeAdc;
+  updatePiezoEnergy(vibration.amplitudeAdc, vibration);
   updatePiezoPeaks(vibration.amplitudeAdc, sample.timestampMs, vibration);
 
-  // Index scales the raw amplitude between the low and severe thresholds.
-  vibration.vibrationIndex = clampFloat(normalizedScore(vibration.amplitudeAdc,
-                                                        piezoThresholds.lowAmplitudeAdc,
-                                                        piezoThresholds.severeAmplitudeAdc),
-                                        0.0f, 100.0f);
-
+  vibration.vibrationIndex = calculateVibrationIndex(vibration.amplitudeAdc,
+                                                     vibration.rmsAdc,
+                                                     vibration.energyAdc);
+  vibration.shortTrend = PIEZO_SHORT_TREND_ALPHA * vibration.vibrationIndex +
+                         (1.0f - PIEZO_SHORT_TREND_ALPHA) * vibration.shortTrend;
+  vibration.longTrend = PIEZO_LONG_TREND_ALPHA * vibration.vibrationIndex +
+                        (1.0f - PIEZO_LONG_TREND_ALPHA) * vibration.longTrend;
+  vibration.trendSlopeAdcPerSecond = (vibration.longTrend - previousPiezoLongTrend) /
+                                     fmaxf(dtSeconds, 0.001f);
   vibration.rateAdcPerSecond = fabsf(vibration.amplitudeAdc - previousPiezoAmplitudeAdc) /
                                fmaxf(dtSeconds, 0.001f);
   vibration.state = classifyVibration(vibration.vibrationIndex);
 }
 
-// ======================================================
-// FUSION AND HAZARD
-// ======================================================
+float normalizedScore(float value, float start, float fullScale) {
+  if (value <= start) return 0.0f;
+  if (value >= fullScale) return 100.0f;
+  return 100.0f * (value - start) / fmaxf(fullScale - start, 0.001f);
+}
 
 float calculateFusionConfidence(const OrientationData &orientation, const MotionData &motion,
-                                const VibrationData &vibration) {
+                                const TrendData &trend, const VibrationData &vibration) {
   float confidence = 0.0f;
 
   if (orientation.tiltDeg > thresholds.watchTiltDeg) confidence += 20.0f;
-  if (motion.gravityDiffG > thresholds.gravityDiffG * 0.6f) confidence += 20.0f;
+  if (trend.longGravityTrend > thresholds.gravityDiffG * 0.6f) confidence += 20.0f;
   if (motion.rotationDps > thresholds.rotationDps) confidence += 15.0f;
   if (vibration.vibrationIndex > 35.0f) confidence += 20.0f;
-  if (vibration.peaksPerSecond >= PIEZO_REPEATED_PEAKS_PER_SECOND) confidence += 10.0f;
+  if (vibration.trendSlopeAdcPerSecond > PIEZO_INCREASING_SLOPE_ADC_PER_SECOND) confidence += 10.0f;
   if (orientation.tiltVelocityDps > thresholds.tiltVelocityDps) confidence += 15.0f;
 
   if (vibration.vibrationIndex > 65.0f &&
@@ -948,7 +1278,8 @@ float calculateFusionConfidence(const OrientationData &orientation, const Motion
 }
 
 float calculateHazard(const OrientationData &orientation, const MotionData &motion,
-                      const VibrationData &vibration, float fusionConfidence) {
+                      const TrendData &trend, const VibrationData &vibration,
+                      float fusionConfidence) {
   float tiltScore = normalizedScore(orientation.tiltDeg,
                                     thresholds.watchTiltDeg,
                                     thresholds.dangerTiltDeg);
@@ -958,6 +1289,9 @@ float calculateHazard(const OrientationData &orientation, const MotionData &moti
   float shockScore = normalizedScore(motion.shockG,
                                      thresholds.shockG,
                                      thresholds.shockG * 4.0f);
+  float driftScore = normalizedScore(trend.longGravityTrend,
+                                     thresholds.gravityDiffG * 0.5f,
+                                     thresholds.gravityDiffG * 2.5f);
   float gravityScore = normalizedScore(motion.gravityDiffG,
                                        thresholds.gravityDiffG,
                                        thresholds.gravityDiffG * 3.0f);
@@ -966,6 +1300,7 @@ float calculateHazard(const OrientationData &orientation, const MotionData &moti
   float weighted = (WEIGHT_TILT * tiltScore +
                     WEIGHT_ROTATION * rotationScore +
                     WEIGHT_SHOCK * shockScore +
+                    WEIGHT_LONG_DRIFT * driftScore +
                     WEIGHT_GRAVITY * gravityScore +
                     WEIGHT_PIEZO_VIBRATION * vibrationScore +
                     WEIGHT_SENSOR_FUSION * fusionConfidence) / 100.0f;
@@ -1009,8 +1344,10 @@ AlertState updateState(float hazardIndex, uint32_t timestampMs) {
   return currentState;
 }
 
-uint16_t detectEvents(const OrientationData &orientation, const MotionData &motion,
-                      const VibrationData &vibration, float fusionConfidence) {
+uint16_t detectEvents(const SensorSample &sample, const FilteredData &filtered,
+                      const OrientationData &orientation, const MotionData &motion,
+                      const TrendData &trend, const VibrationData &vibration,
+                      float fusionConfidence) {
   uint16_t events = hardwareEventMask;
   hardwareEventMask = EVENT_NONE;
 
@@ -1018,7 +1355,7 @@ uint16_t detectEvents(const OrientationData &orientation, const MotionData &moti
     events |= EVENT_SUDDEN_IMPACT;
   }
 
-  if (motion.gravityDiffG > thresholds.shockG * VIBRATION_FACTOR) {
+  if (filtered.vibrationMagnitude > thresholds.shockG * VIBRATION_FACTOR) {
     vibrationCount++;
   } else {
     vibrationCount = 0;
@@ -1054,7 +1391,7 @@ uint16_t detectEvents(const OrientationData &orientation, const MotionData &moti
   }
 
   if (orientation.tiltDeg > thresholds.watchTiltDeg &&
-      motion.gravitySlopeGps > thresholds.gravityRateGps * 0.25f) {
+      trend.gravitySlopeGps > thresholds.gravityRateGps * 0.25f) {
     progressiveTiltCount++;
   } else {
     progressiveTiltCount = 0;
@@ -1063,17 +1400,17 @@ uint16_t detectEvents(const OrientationData &orientation, const MotionData &moti
     events |= EVENT_PROGRESSIVE_TILT;
   }
 
-  if (motion.accelMagnitudeG < SENSOR_DISTURBANCE_LOW_G ||
-      motion.accelMagnitudeG > SENSOR_DISTURBANCE_HIGH_G) {
+  if (filtered.accelMagnitude < SENSOR_DISTURBANCE_LOW_G ||
+      filtered.accelMagnitude > SENSOR_DISTURBANCE_HIGH_G) {
     events |= EVENT_SENSOR_DISTURBANCE;
   }
 
-  if (motion.gravityDiffG > thresholds.shockG &&
+  if (filtered.vibrationMagnitude > thresholds.shockG &&
       motion.rotationDps < thresholds.rotationDps * EARTHQUAKE_ROTATION_FACTOR) {
     events |= EVENT_EARTHQUAKE_LIKE;
   }
 
-  if (motion.gravityDiffG > thresholds.gravityDiffG &&
+  if (trend.longGravityTrend > thresholds.gravityDiffG &&
       orientation.tiltVelocityDps < thresholds.tiltVelocityDps) {
     events |= EVENT_SLOW_LANDSLIDE;
   }
@@ -1083,8 +1420,8 @@ uint16_t detectEvents(const OrientationData &orientation, const MotionData &moti
     events |= EVENT_SUDDEN_LANDSLIDE;
   }
 
-  if (motion.gravityDiffG > thresholds.gravityDiffG * 0.6f &&
-      motion.gravitySlopeGps > 0.0f &&
+  if (trend.longGravityTrend > thresholds.gravityDiffG * 0.6f &&
+      trend.gravitySlopeGps > 0.0f &&
       orientation.tiltDeg > thresholds.watchTiltDeg) {
     events |= EVENT_CONTINUOUS_CREEP;
   }
@@ -1128,28 +1465,33 @@ void printEventName(uint16_t eventBit) {
 // LOGGING AND OUTPUT
 // ======================================================
 
-void makeDataRecord(const SensorSample &sample, const PiezoSample &piezoSample,
+void makeDataRecord(const SensorSample &sample, const FilteredData &filtered,
                     const OrientationData &orientation, const MotionData &motion,
-                    const VibrationData &vibration, float fusionConfidence,
-                    float hazardIndex, uint16_t eventMask, DataRecord &record) {
+                    const TrendData &trend, const VibrationData &vibration,
+                    float fusionConfidence, float hazardIndex,
+                    uint16_t eventMask, DataRecord &record) {
   record.timestampMs = sample.timestampMs;
   record.accelRaw = sample.accelRaw;
   record.gyroRaw = sample.gyroRaw;
-  record.accelMagnitudeG = motion.accelMagnitudeG;
+  record.accelFiltered = filtered.accelForTilt;
+  record.vibration = filtered.vibration;
   record.rollDeg = orientation.rollDeg;
   record.pitchDeg = orientation.pitchDeg;
   record.tiltDeg = orientation.tiltDeg;
   record.tiltVelocityDps = orientation.tiltVelocityDps;
   record.gravityDiffG = motion.gravityDiffG;
-  record.gravitySlopeGps = motion.gravitySlopeGps;
   record.shockG = motion.shockG;
   record.rotationDps = motion.rotationDps;
-  record.piezoRawAdc = piezoSample.rawAdc;
-  record.piezoVoltage = piezoSample.voltage;
-  record.piezoAmplitudeAdc = vibration.amplitudeAdc;
-  record.piezoPeakAdc = vibration.peakAmplitudeAdc;
-  record.piezoPeakCount = vibration.peakCount;
-  record.piezoPeaksPerSecond = vibration.peaksPerSecond;
+  record.shortTrend = trend.shortGravityTrend;
+  record.longTrend = trend.longGravityTrend;
+  record.gravitySlopeGps = trend.gravitySlopeGps;
+  record.gravityRateGps = trend.gravityRateGps;
+  record.vibrationAmplitudeAdc = vibration.amplitudeAdc;
+  record.vibrationRmsAdc = vibration.rmsAdc;
+  record.vibrationEnergyAdc = vibration.energyAdc;
+  record.vibrationPeakAdc = vibration.peakAmplitudeAdc;
+  record.vibrationPeakCount = vibration.peakCount;
+  record.vibrationPeaksPerSecond = vibration.peaksPerSecond;
   record.vibrationIndex = vibration.vibrationIndex;
   record.vibrationState = vibration.state;
   record.fusionConfidence = fusionConfidence;
@@ -1157,31 +1499,32 @@ void makeDataRecord(const SensorSample &sample, const PiezoSample &piezoSample,
   record.state = currentState;
   record.eventMask = eventMask;
   record.newEventMask = eventMask & ~previousEventMask;
-  record.lat = gps.location.isValid() ? gps.location.lat() : 0.0;
-  record.lng = gps.location.isValid() ? gps.location.lng() : 0.0;
-  record.alt = gps.altitude.isValid() ? gps.altitude.meters() : 0.0;
-  record.satellites = gps.satellites.isValid() ? gps.satellites.value() : 0;
 }
 
 void printText(const DataRecord &record) {
 #ifdef MODE_TEXT
 
-  // Ringkasan utama (1 baris) - semua nilai mentah
-  Serial.printf("[%8lu ms] ", (unsigned long)record.timestampMs);
+  // Ringkasan utama (1 baris)
+  Serial.printf("[%8lu ms] ",
+                (unsigned long)record.timestampMs);
 
-  Serial.printf("ACC=%.4f,%.4f,%.4fg | ",
-                record.accelRaw.x, record.accelRaw.y, record.accelRaw.z);
+  Serial.printf("TILT=%.2f° | ",
+                record.tiltDeg);
 
-  Serial.printf("GYR=%.2f,%.2f,%.2fdps | ",
-                record.gyroRaw.x, record.gyroRaw.y, record.gyroRaw.z);
+  Serial.printf("GRAV=%.3fg | ",
+                record.gravityDiffG);
 
-  Serial.printf("TILT=%.2f\u00b0 | ", record.tiltDeg);
+  Serial.printf("ROT=%.2fdps | ",
+                record.rotationDps);
 
-  Serial.printf("PIEZO=%u | ", record.piezoRawAdc);
+  Serial.printf("PIEZO=%.0f | ",
+                record.vibrationIndex);
 
-  Serial.printf("HAZARD=%.0f | ", record.hazardIndex);
+  Serial.printf("HAZARD=%.0f | ",
+                record.hazardIndex);
 
-  Serial.printf("STATE=%s\n", stateName(record.state));
+  Serial.printf("STATE=%s\n",
+                stateName(record.state));
 
   // Hanya tampilkan event jika memang ada
   if (record.newEventMask != EVENT_NONE) {
@@ -1209,13 +1552,6 @@ void printText(const DataRecord &record) {
 #endif
 }
 
-#ifdef MODE_PLOT
-void printPlotHeader() {
-  if (plotHeaderPrinted) return;
-  plotHeaderPrinted = true;
-}
-#endif
-
 void printPlotValue(const char *label, float value, uint8_t precision, bool lastValue) {
 #ifdef MODE_PLOT
   Serial.print(label);
@@ -1232,158 +1568,49 @@ void printPlotValue(const char *label, float value, uint8_t precision, bool last
 void printPlot(const DataRecord &record) {
 #ifdef MODE_PLOT
   printPlotHeader();
-  printPlotValue("AccelX_g", record.accelRaw.x, 5, false);
-  printPlotValue("AccelY_g", record.accelRaw.y, 5, false);
-  printPlotValue("AccelZ_g", record.accelRaw.z, 5, false);
-  printPlotValue("GyroX_dps", record.gyroRaw.x, 3, false);
-  printPlotValue("GyroY_dps", record.gyroRaw.y, 3, false);
-  printPlotValue("GyroZ_dps", record.gyroRaw.z, 3, false);
+  printPlotValue("AccelX_g", record.accelFiltered.x, 5, false);
+  printPlotValue("AccelY_g", record.accelFiltered.y, 5, false);
+  printPlotValue("AccelZ_g", record.accelFiltered.z, 5, false);
   printPlotValue("Roll_deg", record.rollDeg, 3, false);
   printPlotValue("Pitch_deg", record.pitchDeg, 3, false);
   printPlotValue("Tilt_deg", record.tiltDeg, 3, false);
   printPlotValue("GravityDiff_g", record.gravityDiffG, 5, false);
   printPlotValue("Shock_g", record.shockG, 5, false);
   printPlotValue("Rotation_dps", record.rotationDps, 3, false);
-  printPlotValue("PiezoRaw_adc", (float)record.piezoRawAdc, 0, false);
-  printPlotValue("PiezoAmp_adc", record.piezoAmplitudeAdc, 2, false);
+  printPlotValue("PiezoAmp_adc", record.vibrationAmplitudeAdc, 2, false);
+  printPlotValue("PiezoRMS_adc", record.vibrationRmsAdc, 2, false);
+  printPlotValue("PiezoEnergy_adc", record.vibrationEnergyAdc, 2, false);
   printPlotValue("PiezoIndex", record.vibrationIndex, 2, false);
+  printPlotValue("GravityShortTrend_g", record.shortTrend, 5, false);
+  printPlotValue("GravityLongTrend_g", record.longTrend, 5, false);
   printPlotValue("FusionConfidence", record.fusionConfidence, 2, false);
-  printPlotValue("HazardIndex", record.hazardIndex, 2, true);
+  printPlotValue("HazardIndex", record.hazardIndex, 2, false);
+  printPlotValue("WatchTilt_deg", thresholds.watchTiltDeg, 3, false);
+  printPlotValue("WarningTilt_deg", thresholds.warningTiltDeg, 3, false);
+  printPlotValue("DangerTilt_deg", thresholds.dangerTiltDeg, 3, true);
 #endif
 }
 
+// Structured logging is separated from printing so the same record can later be
+// redirected to SD, CSV, WiFi, MQTT, or a database without changing the monitor.
 void logRecord(const DataRecord &record) {
   printText(record);
   printPlot(record);
 }
 
-// ======================================================
-// NETWORK TELEMETRY (WiFi + MQTT) -- DataRecord channel only
-// ======================================================
-// The ESP32 publishes the FULL DataRecord as one JSON document on a single
-// topic. Point the Node-RED "mqtt in" node at TOPIC_DATARECORD and adapt the
-// "Route to Dashboard" / "Format for InfluxDB" functions to the new field
-// names. Edit the values below before flashing.
-
-const char *WIFI_SSID     = "iPhone";
-const char *WIFI_PASSWORD = "pakebayar";
-
-// Host running the MQTT broker: the LAN IP of the Mosquitto/Node-RED machine,
-// or a cloud broker hostname.
-const char *MQTT_HOST = "test.mosquitto.org";
-const uint16_t MQTT_PORT = 1883;
-const char *MQTT_USER = ""; // leave empty when the broker allows anonymous
-const char *MQTT_PASS = "";
-
-const char *DEVICE_ID        = "ews-esp32-01";
-const char *TOPIC_DATARECORD = "landslide/ews-esp32-01/DataRecord";
-
-// Publish throttle so the 10 Hz sample loop does not flood the broker.
-// New events bypass the throttle so alerts are never delayed.
-const uint32_t DATARECORD_PUBLISH_INTERVAL_MS = 1000;
-const uint32_t WIFI_RETRY_INTERVAL_MS = 10000;
-const uint32_t MQTT_RETRY_INTERVAL_MS = 5000;
-
-WiFiClient wifiTransport;
-PubSubClient mqttClient(wifiTransport);
-HardwareSerial gpsSerial(2);
-TinyGPSPlus gps;
-uint32_t lastWifiAttemptMs = 0;
-uint32_t lastMqttAttemptMs = 0;
-uint32_t lastDataRecordPublishMs = 0;
-bool wifiStarted = false;
-
-// Non-blocking connection manager. Monitoring, the buzzer, and the hazard
-// state machine keep working even when WiFi or the broker is down.
-void maintainNetwork() {
-  uint32_t tNowMs = millis();
-
-  if (WiFi.status() != WL_CONNECTED) {
-    if (!wifiStarted || tNowMs - lastWifiAttemptMs >= WIFI_RETRY_INTERVAL_MS) {
-      wifiStarted = true;
-      lastWifiAttemptMs = tNowMs;
-      WiFi.mode(WIFI_STA);
-      WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-#ifdef MODE_TEXT
-      Serial.println("WIFI  : connecting...");
-#endif
-    }
-    return;
-  }
-
-  if (!mqttClient.connected()) {
-    if (lastMqttAttemptMs == 0 || tNowMs - lastMqttAttemptMs >= MQTT_RETRY_INTERVAL_MS) {
-      lastMqttAttemptMs = tNowMs;
-      mqttClient.setServer(MQTT_HOST, MQTT_PORT);
-      // The full DataRecord payload is larger than the PubSubClient default.
-      mqttClient.setBufferSize(1024);
-      bool connected = mqttClient.connect(DEVICE_ID, MQTT_USER, MQTT_PASS);
-      if (connected) {
-#ifdef MODE_TEXT
-        Serial.println("MQTT  : connected");
-#endif
-      }
-    }
-    return;
-  }
-
-  mqttClient.loop();
+void readFutureSensors() {
+  // Reserved extension point for rain, soil moisture, GPS, barometer,
+  // temperature, LoRa, WiFi, MQTT, and SD-card metadata.
 }
 
-// Publish the complete DataRecord on the single DataRecord channel.
-void publishDataRecord(const DataRecord &record) {
-  if (!mqttClient.connected()) {
-    return; // never block monitoring on the network
-  }
+void writeStorageRecord(const DataRecord &record) {
+  (void)record;
+  // Reserved extension point for SD-card or flash logging.
+}
 
-  uint32_t tNowMs = millis();
-  bool hasNewEvent = record.newEventMask != EVENT_NONE;
-  if (!hasNewEvent &&
-      tNowMs - lastDataRecordPublishMs < DATARECORD_PUBLISH_INTERVAL_MS) {
-    return;
-  }
-  lastDataRecordPublishMs = tNowMs;
-
-  JsonDocument doc; // ArduinoJson v7
-  doc["device"]        = DEVICE_ID;
-  doc["ts"]            = record.timestampMs;
-  doc["accelX"]        = record.accelRaw.x;
-  doc["accelY"]        = record.accelRaw.y;
-  doc["accelZ"]        = record.accelRaw.z;
-  doc["gyroX"]         = record.gyroRaw.x;
-  doc["gyroY"]         = record.gyroRaw.y;
-  doc["gyroZ"]         = record.gyroRaw.z;
-  doc["accelMag"]      = record.accelMagnitudeG;
-  doc["roll"]          = record.rollDeg;
-  doc["pitch"]         = record.pitchDeg;
-  doc["tilt"]          = record.tiltDeg;
-  doc["tiltVelocity"]  = record.tiltVelocityDps;
-  doc["gravityDiff"]   = record.gravityDiffG;
-  doc["gravitySlope"]  = record.gravitySlopeGps;
-  doc["shock"]         = record.shockG;
-  doc["rotation"]      = record.rotationDps;
-  doc["piezoRaw"]      = record.piezoRawAdc;
-  doc["piezoVoltage"]  = record.piezoVoltage;
-  doc["piezoAmp"]      = record.piezoAmplitudeAdc;
-  doc["piezoPeak"]     = record.piezoPeakAdc;
-  doc["piezoPeakCount"] = record.piezoPeakCount;
-  doc["piezoPps"]      = record.piezoPeaksPerSecond;
-  doc["vibIndex"]      = record.vibrationIndex;
-  doc["vibState"]      = vibrationStateName(record.vibrationState);
-  doc["confidence"]    = record.fusionConfidence;
-  doc["hazard"]        = record.hazardIndex;
-  doc["state"]         = stateName(record.state);
-  doc["events"]        = record.eventMask;
-  doc["newEvents"]     = record.newEventMask;
-  doc["lat"]           = record.lat;
-  doc["lng"]           = record.lng;
-  doc["alt"]           = record.alt;
-  doc["sats"]          = record.satellites;
-  doc["rssi"]          = WiFi.RSSI();
-
-  char payload[1024];
-  size_t len = serializeJson(doc, payload, sizeof(payload));
-  mqttClient.publish(TOPIC_DATARECORD, (const uint8_t *)payload, len, false);
+void publishNetworkTelemetry(const DataRecord &record) {
+  (void)record;
+  // Reserved extension point for WiFi, MQTT, LoRa, or database upload.
 }
 
 // ======================================================
@@ -1392,8 +1619,7 @@ void publishDataRecord(const DataRecord &record) {
 
 void setup() {
   Serial.begin(115200);
-  gpsSerial.begin(9600, SERIAL_8N1, GPS_RX_PIN, GPS_TX_PIN);
-  while (!Serial && millis() < 3000);
+  delay(1000);
   Wire.begin();
   configurePiezoInput();
 
@@ -1418,9 +1644,6 @@ void setup() {
   attachInterrupt(digitalPinToInterrupt(IMU_INT1_PIN), imuInterruptServiceRoutine, RISING);
 #endif
 
-  // Start WiFi early so it can associate while sensor calibration runs.
-  maintainNetwork();
-
   calibrateSensor();
   calibratePiezo();
   calculateAdaptiveThresholds();
@@ -1429,15 +1652,6 @@ void setup() {
 
 void loop() {
   uint32_t nowMs = millis();
-
-  // Process any incoming GPS data non-blocking
-  while (gpsSerial.available() > 0) {
-    gps.encode(gpsSerial.read());
-  }
-
-  // Keep WiFi/MQTT alive on every pass; this call never blocks sampling.
-  maintainNetwork();
-
   bool sampleDue = (nowMs - lastSampleMs) >= SAMPLE_INTERVAL_MS;
 
 #ifdef USE_IMU_INTERRUPT
@@ -1454,10 +1668,14 @@ void loop() {
 #endif
 
   SensorSample sample;
+  FilteredData filtered;
   OrientationData orientation;
   MotionData motion;
   PiezoSample piezoSample;
-  static VibrationData vibration = {0.0f, 0.0f, 0, 0.0f, 0.0f, 0.0f,
+  PiezoFilteredData piezoFiltered;
+  static TrendData trend = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
+  static VibrationData vibration = {0.0f, 0.0f, 0.0f, 0.0f, 0, 0.0f,
+                                    0.0f, 0.0f, 0.0f, 0.0f, 0.0f,
                                     VIBRATION_VERY_QUIET};
 
   readSensor(sample);
@@ -1470,31 +1688,42 @@ void loop() {
   }
   lastSampleMs = sample.timestampMs;
 
-  // All calculations run directly on the raw sample. No filtering anywhere.
-  calculateTilt(sample, dtSeconds, orientation);
-  calculateMotion(sample, dtSeconds, motion);
-  calculateVibration(piezoSample, dtSeconds, vibration);
+  filterData(sample, filtered);
+  calculateTilt(sample, filtered, dtSeconds, orientation);
+  calculateGravity(filtered, motion);
+  calculateShock(filtered, motion);
+  calculateRotation(sample, motion);
+  calculateTrend(orientation, motion, dtSeconds, trend);
+  
+  filterPiezo(piezoSample, piezoFiltered);
+  calculateVibration(piezoSample, piezoFiltered, dtSeconds, vibration);
 
-  // === Cek auto-calibration ===
-  checkAutoCalibration(sample, orientation, motion, sample.timestampMs);
+  // === TAMBAHKAN INI: Cek auto-calibration ===
+  checkAutoCalibration(filtered, orientation, motion, sample.timestampMs);
 
-  float fusionConfidence = calculateFusionConfidence(orientation, motion, vibration);
-  float hazardIndex = calculateHazard(orientation, motion, vibration, fusionConfidence);
+  float fusionConfidence = calculateFusionConfidence(orientation, motion, trend, vibration);
+  float hazardIndex = calculateHazard(orientation, motion, trend, vibration, fusionConfidence);
   updateState(hazardIndex, sample.timestampMs);
-
-  uint16_t eventMask = detectEvents(orientation, motion, vibration, fusionConfidence);
+  
+  uint16_t eventMask = detectEvents(sample, filtered, orientation, motion, trend,
+                                    vibration, fusionConfidence);
 
   DataRecord record;
-  makeDataRecord(sample, piezoSample, orientation, motion, vibration,
+  makeDataRecord(sample, filtered, orientation, motion, trend, vibration,
                  fusionConfidence, hazardIndex, eventMask, record);
   logRecord(record);
-  publishDataRecord(record);
+  writeStorageRecord(record);
+  publishNetworkTelemetry(record);
+  readFutureSensors();
 
-  // === Kontrol Buzzer ===
+  // === TAMBAHKAN INI: Kontrol Buzzer ===
   controlBuzzer();
 
-  previousTiltDeg = orientation.tiltDeg;
+  previousOrientation = orientation;
   previousGravityDiffG = motion.gravityDiffG;
+  previousLongTrend = trend.longGravityTrend;
   previousPiezoAmplitudeAdc = vibration.amplitudeAdc;
+  previousPiezoLongTrend = vibration.longTrend;
   previousEventMask = eventMask;
 }
+
