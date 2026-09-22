@@ -1,13 +1,40 @@
-rbi_engine.egg-info
-
-data/
+# Python
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
+*.egg-info/
+rbi_engine.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual Environment
+.venv/
+venv/
+env/
+
+# IDE
+.idea/
+.vscode/
 *.swp
 *.swo
-*.log
 
-.idea
-.vscode
+# Testing
+.pytest_cache/
+
+# Data files (too large for git)
+data/
+sample_data/
+KAB BANDUNG/
+
+# Generated output files
+peta_*.html
+*.png
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log

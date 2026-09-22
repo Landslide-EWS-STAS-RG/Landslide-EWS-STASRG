@@ -39,7 +39,7 @@ dev = [
 ]
 
 [project.urls]
-"Homepage" = "https://github.com/mochidaz/rbi-engine"
+"Homepage" = "https://github.com/Landslide-EWS-STAS-RG/Landslide-EWS-STASRG"
 
 [tool.setuptools.packages.find]
 where = ["."]
