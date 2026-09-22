@@ -39,6 +39,12 @@ Proyek ini merupakan sistem analisis kerentanan longsor yang menggunakan data **
 
 Studi kasus utama difokuskan pada **Desa Tribaktimulya, Kecamatan Pangalengan, Kabupaten Bandung** — wilayah pegunungan dengan topografi curam yang rawan longsor.
 
+#### 🗺️ Peta Analisis Zona Curam & Risiko Longsor
+
+![Peta Analisis Zona Curam & Risiko Longsor — Desa Tribaktimulya, Pangalengan](docs/images/peta_zona_curam_tribaktimulya.png)
+
+> **Panel A.** Sebaran zona curam (>13°) seluruh desa — **Panel B.** Detail topografi area pengamatan — **Panel C.** Profil penampang melintang lereng A–A' — **Panel D.** Distribusi statistik kemiringan & bahaya longsor.
+
 ---
 
 ## 🏗 Arsitektur Sistem
@@ -209,6 +215,12 @@ Analisis geomorfologi mendalam untuk Desa Tribaktimulya dengan fitur:
      - C. Profil penampang melintang lereng A – A'
      - D. Distribusi statistik kemiringan & bahaya longsor
 
+#### Hasil Analisis Potensi Bahaya Longsor
+
+![Analisis Potensi Bahaya Longsor — Desa Tribaktimulya](docs/images/peta_tribaktimulya_analisis.png)
+
+> **Kiri:** Peta kontur & elevasi — **Tengah:** Peta kemiringan lereng (Van Zuidam) — **Kanan:** Peta tutupan lahan.
+
 ---
 
 ### 3. Visualisasi Peta GIS
@@ -219,6 +231,10 @@ Visualisasi data RBI multi-layer untuk skala kabupaten:
 
 - **Peta interaktif** (Folium) — Layer permukiman, hutan, perairan, jalan dengan basemap satelit Esri dan OpenTopoMap
 - **Peta statis** (Matplotlib) — Overlay penutup lahan dan jaringan jalan Kabupaten Bandung
+
+![Peta Penutup Lahan & Jaringan Jalan — Kabupaten Bandung (RBI)](docs/images/peta_kab_bandung.png)
+
+> Peta penutup lahan Kabupaten Bandung menampilkan overlay hutan, perkebunan, danau/waduk, permukiman, dan jaringan jalan dari data RBI 25K.
 
 ---
 

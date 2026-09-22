@@ -31,6 +31,7 @@ KAB BANDUNG/
 # Generated output files
 peta_*.html
 *.png
+!docs/images/*.png
 
 # OS
 .DS_Store
