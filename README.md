@@ -1,13 +1,15 @@
 # Landslide Early Warning System (EWS) - STASRG
 
-Sistem Peringatan Dini Tanah Longsor (Landslide EWS) terintegrasi yang menggunakan ESP32 dengan sensor IMU dan Piezo, dikirimkan melalui komunikasi serial ke komputer lokal, lalu diproses menggunakan Node-RED dan disimpan ke dalam database InfluxDB.
+Sistem Peringatan Dini Tanah Longsor (Landslide EWS) terintegrasi yang menggunakan ESP32 dengan sensor IMU dan Piezo, dilengkapi analisis spasial GIS (Rumus Bencana Indonesia) dan deteksi anomali berbasis *Machine Learning*.
 
 ## Arsitektur Sistem
 
-1. **Hardware (ESP32)**: Membaca data *tilt* (kemiringan), *rotation* (rotasi), *gravity drift*, dan *piezo vibration*. Data difilter dan dikirim via Serial USB.
+1. **Hardware (ESP32)**: Membaca data *tilt* (kemiringan), *rotation* (rotasi), *gravity drift*, dan *piezo vibration*. Data difilter dan dikirim via Serial USB atau WiFi (MQTT).
 2. **Serial Bridge (Python)**: Script perantara yang membaca data dari port Serial USB dan mengirimkannya (via HTTP POST) ke Node-RED.
-3. **Middleware (Node-RED)**: Menerima data JSON dari Python, menerjemahkannya ke dalam dashboard UI secara *real-time*, memformat struktur data, lalu meneruskannya ke InfluxDB.
-4. **Database (InfluxDB v2)**: Menyimpan seluruh log data secara historis (*time-series*) yang siap digunakan untuk algoritma *Machine Learning*.
+3. **Middleware (Node-RED)**: Menerima data JSON dari Python/MQTT, menerjemahkannya ke dalam dashboard UI secara *real-time*, memformat struktur data, lalu meneruskannya ke InfluxDB.
+4. **Database (InfluxDB v2)**: Menyimpan seluruh log data secara historis (*time-series*).
+5. **Machine Learning (Python)**: Deteksi anomali menggunakan Isolation Forest pada data sensor untuk klasifikasi risiko longsor.
+6. **GIS / Analisis Spasial (Python)**: Modul analisis kerentanan longsor berbasis Rumus Bencana Indonesia (RBI), menghasilkan peta zona risiko.
 
 ## Prasyarat (Prerequisites)
 
@@ -19,13 +21,14 @@ Untuk menjalankan proyek ini di perangkat baru, pastikan Anda telah menginstal:
 
 ## Struktur Repositori
 
-- `firmware/arduino_usb/`: Kode sumber utama ESP32 (Arduino IDE) yang menggunakan koneksi Serial USB.
-- `firmware/arduino_mqtt/`: Kode sumber alternatif ESP32 (Arduino IDE) yang menggunakan koneksi WiFi + MQTT. Lihat [Panduan MQTT](docs/MQTT_UPGRADE.md).
-- `firmware/platformio_usb/`: Kode sumber alternatif ESP32 menggunakan PlatformIO.
+- `firmware/arduino_usb/`: Kode sumber utama ESP32 (Arduino IDE) — koneksi Serial USB.
+- `firmware/arduino_mqtt/`: Kode sumber ESP32 (Arduino IDE) — koneksi WiFi + MQTT. Lihat [Panduan MQTT](docs/MQTT_UPGRADE.md).
+- `firmware/platformio_usb/`: Kode sumber ESP32 menggunakan PlatformIO.
 - `firmware/wokwi_simulation/`: Berkas simulasi Wokwi.
-- `python/`: Script *serial bridge* untuk menjembatani USB Serial ke HTTP.
+- `python/`: Serial bridge, ML engine (Isolation Forest), data simulator, dan model terlatih.
+- `gis/`: Modul analisis spasial GIS — RBI engine, visualisasi peta, dan boundary GeoJSON.
 - `node-red/`: Berkas konfigurasi alur Node-RED (Dashboard & InfluxDB).
-- `docs/`: Dokumentasi tambahan.
+- `docs/`: Dokumentasi tambahan dan gambar peta analisis.
 
 ---
 
@@ -80,4 +83,56 @@ Untuk pengguna Mac/Linux, kami telah menyediakan *shortcut script* agar sistem b
   Pastikan Anda telah menutup Arduino Serial Monitor sebelum menjalankan script Python.
 
 ---
+
+## Modul Machine Learning
+
+Modul ML menggunakan **Isolation Forest** untuk mendeteksi anomali pada data sensor secara otomatis.
+
+```bash
+cd python
+python3 -m venv venv && source venv/bin/activate
+pip install -r requirements.txt
+
+# Simulasi data (opsional)
+python3 data_simulator.py
+
+# Training model
+python3 train_model.py
+
+# Menjalankan ML engine
+python3 ml_engine.py
+```
+
+Model terlatih tersimpan di `python/models/`.
+
+---
+
+## Modul GIS — Analisis Kerentanan Longsor (RBI)
+
+Modul analisis spasial berbasis **Rumus Bencana Indonesia (RBI)** untuk menghitung indeks kerentanan longsor di wilayah Tribaktimulya, Kabupaten Bandung.
+
+```bash
+cd gis
+pip install -e .   # install dari pyproject.toml
+
+# Menjalankan demo analisis RBI
+python3 run_demo.py
+
+# Visualisasi peta
+python3 visualize_map.py
+
+# Analisis lengkap
+python3 analisis_longsor_tribaktimulya.py
+```
+
+Konfigurasi parameter RBI bisa disesuaikan di `gis/rbi_config.yaml`.
+
+### Contoh Peta Analisis
+
+| Peta Kabupaten Bandung | Analisis Tribaktimulya | Zona Kemiringan Curam |
+|:-:|:-:|:-:|
+| ![Kab. Bandung](docs/images/peta_kab_bandung.png) | ![Analisis](docs/images/peta_tribaktimulya_analisis.png) | ![Zona Curam](docs/images/peta_zona_curam_tribaktimulya.png) |
+
+---
 *Proyek ini dikembangkan untuk kebutuhan riset dan sistem peringatan dini kebencanaan.*
+
