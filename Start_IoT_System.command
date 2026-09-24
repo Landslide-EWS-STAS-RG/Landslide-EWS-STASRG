@@ -22,8 +22,9 @@ fi
 
 # 3. Menjalankan Serial Bridge Python
 echo "[3/3] Menjalankan Serial Bridge (Koneksi ESP32)..."
-pkill -f serial_bridge.py
-nohup /Users/tonihandoko/.gemini/antigravity/scratch/venv/bin/python3 -u /Users/tonihandoko/.gemini/antigravity/scratch/serial_bridge.py > /tmp/serial_bridge.log 2>&1 &
+DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+pkill -f "$DIR/python/serial_bridge.py" || true
+nohup "$DIR/python/venv/bin/python3" -u "$DIR/python/serial_bridge.py" > /tmp/serial_bridge.log 2>&1 &
 
 echo ""
 echo "=========================================="

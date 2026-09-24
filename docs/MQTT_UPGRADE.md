@@ -10,9 +10,9 @@ ESP32 ──WiFi──> MQTT Broker (Mosquitto) ──> Node-RED (mqtt in) ─�
 
 ## Files
 
-- `LandslideMonitoringSystem_MQTT.ino` — your improved sketch with WiFi + MQTT added.
+- `firmware/arduino_mqtt/LandslideMonitoringSystem_MQTT.ino` — your improved sketch with WiFi + MQTT added.
   The reserved `publishNetworkTelemetry()` extension point is now implemented.
-- `landslide_flow_mqtt.json` — your Node-RED flow with MQTT input nodes added.
+- `node-red/landslide_flow_mqtt.json` — your Node-RED flow with MQTT input nodes added.
   The old HTTP endpoints still work, so you can migrate gradually.
 
 ## 1. Install an MQTT broker (Mosquitto)

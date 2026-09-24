@@ -7,3 +7,8 @@ venv/
 *.log
 .DS_Store
 __pycache__/
+
+# Additional ignores
+.cache/
+compile_commands.json
+*.command.bak

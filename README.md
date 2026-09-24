@@ -17,12 +17,22 @@ Untuk menjalankan proyek ini di perangkat baru, pastikan Anda telah menginstal:
 - [Node-RED](https://nodered.org/docs/getting-started/local)
 - [InfluxDB v2](https://docs.influxdata.com/influxdb/v2.0/install/) (Jika di Mac: `brew install influxdb@2`)
 
+## Struktur Repositori
+
+- `firmware/arduino_usb/`: Kode sumber utama ESP32 (Arduino IDE) yang menggunakan koneksi Serial USB.
+- `firmware/arduino_mqtt/`: Kode sumber alternatif ESP32 (Arduino IDE) yang menggunakan koneksi WiFi + MQTT. Lihat [Panduan MQTT](docs/MQTT_UPGRADE.md).
+- `firmware/platformio_usb/`: Kode sumber alternatif ESP32 menggunakan PlatformIO.
+- `firmware/wokwi_simulation/`: Berkas simulasi Wokwi.
+- `python/`: Script *serial bridge* untuk menjembatani USB Serial ke HTTP.
+- `node-red/`: Berkas konfigurasi alur Node-RED (Dashboard & InfluxDB).
+- `docs/`: Dokumentasi tambahan.
+
 ---
 
 ## Panduan Instalasi dan Konfigurasi
 
 ### 1. Konfigurasi Hardware (ESP32)
-- Buka folder `arduino/LandslideMonitoringSystem_Improved` dengan Arduino IDE.
+- Buka folder `firmware/arduino_usb` dengan Arduino IDE.
 - Pastikan library **SparkFunLSM6DS3** sudah terinstal di *Library Manager*.
 - Sambungkan ESP32 Anda, pilih Board dan Port yang sesuai, lalu klik **Upload**.
 - *(Opsional)*: Anda bisa memverifikasi apakah sensor berfungsi dengan membuka *Serial Monitor* (Baud rate: 115200). 
