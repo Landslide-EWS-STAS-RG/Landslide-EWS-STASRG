@@ -1,6 +1,6 @@
 # Landslide Early Warning System (EWS) - STASRG
 
-Sistem Peringatan Dini Tanah Longsor (Landslide EWS) terintegrasi yang menggunakan ESP32 dengan sensor IMU dan Piezo, dilengkapi analisis spasial GIS (Rumus Bencana Indonesia) dan deteksi anomali berbasis *Machine Learning*.
+Sistem Peringatan Dini Tanah Longsor (Landslide EWS) terintegrasi yang menggunakan ESP32 dengan sensor IMU dan Piezo, dilengkapi analisis spasial GIS (Rumus Bencana Indonesia).
 
 ## Arsitektur Sistem
 
@@ -8,8 +8,7 @@ Sistem Peringatan Dini Tanah Longsor (Landslide EWS) terintegrasi yang menggunak
 2. **Serial Bridge (Python)**: Script perantara yang membaca data dari port Serial USB dan mengirimkannya (via HTTP POST) ke Node-RED.
 3. **Middleware (Node-RED)**: Menerima data JSON dari Python/MQTT, menerjemahkannya ke dalam dashboard UI secara *real-time*, memformat struktur data, lalu meneruskannya ke InfluxDB.
 4. **Database (InfluxDB v2)**: Menyimpan seluruh log data secara historis (*time-series*).
-5. **Machine Learning (Python)**: Deteksi anomali menggunakan Isolation Forest pada data sensor untuk klasifikasi risiko longsor.
-6. **GIS / Analisis Spasial (Python)**: Modul analisis kerentanan longsor berbasis Rumus Bencana Indonesia (RBI), menghasilkan peta zona risiko.
+5. **GIS / Analisis Spasial (Python)**: Modul analisis kerentanan longsor berbasis Rumus Bencana Indonesia (RBI), menghasilkan peta zona risiko.
 
 ## Prasyarat (Prerequisites)
 
@@ -25,7 +24,7 @@ Untuk menjalankan proyek ini di perangkat baru, pastikan Anda telah menginstal:
 - `firmware/arduino_mqtt/`: Kode sumber ESP32 (Arduino IDE) — koneksi WiFi + MQTT. Lihat [Panduan MQTT](docs/MQTT_UPGRADE.md).
 - `firmware/platformio_usb/`: Kode sumber ESP32 menggunakan PlatformIO.
 - `firmware/wokwi_simulation/`: Berkas simulasi Wokwi.
-- `python/`: Serial bridge, ML engine (Isolation Forest), data simulator, dan model terlatih.
+- `python/`: Serial bridge untuk koneksi ESP32 ke Node-RED.
 - `gis/`: Modul analisis spasial GIS — RBI engine, visualisasi peta, dan boundary GeoJSON.
 - `node-red/`: Berkas konfigurasi alur Node-RED (Dashboard & InfluxDB).
 - `docs/`: Dokumentasi tambahan dan gambar peta analisis.
@@ -81,29 +80,6 @@ Untuk pengguna Mac/Linux, kami telah menyediakan *shortcut script* agar sistem b
   2. Pastikan InfluxDB *Organization* (`iot_project`) dan *Bucket* (`landslide_data`) sudah dibuat sebelumnya di antarmuka web InfluxDB.
 - **Port Busy / Access Denied?**
   Pastikan Anda telah menutup Arduino Serial Monitor sebelum menjalankan script Python.
-
----
-
-## Modul Machine Learning
-
-Modul ML menggunakan **Isolation Forest** untuk mendeteksi anomali pada data sensor secara otomatis.
-
-```bash
-cd python
-python3 -m venv venv && source venv/bin/activate
-pip install -r requirements.txt
-
-# Simulasi data (opsional)
-python3 data_simulator.py
-
-# Training model
-python3 train_model.py
-
-# Menjalankan ML engine
-python3 ml_engine.py
-```
-
-Model terlatih tersimpan di `python/models/`.
 
 ---
 
